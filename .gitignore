@@ -1,0 +1,17 @@
+# Python
+env/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Generated environment files
+*.env
+*.secrets
+/local.properties
+
+# Test files
+*.mp3
+*.wav

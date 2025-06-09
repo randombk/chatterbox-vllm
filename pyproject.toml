@@ -1,0 +1,33 @@
+[project]
+name = "chatterbox-vllm"
+description = "Chatterbox TTS ported to VLLM for efficienct and advanced inference tasks"
+dynamic = ["version"]
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+readme = "README.md"
+authors = [
+    {name = "David Li", email = "david@david-li.com"},
+    {name = "resemble-ai", email = "engineering@resemble.ai"}
+]
+keywords = ["llm", "gpt", "cli", "tts", "chatterbox"]
+dependencies = [
+    "torch",
+    "torchaudio",
+    "transformers",
+    "vllm"
+]
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[tool.setuptools.dynamic]
+version = { file = ".latest-version.generated.txt" }
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.urls]
+"Changelog" = "https://github.com/randombk/chatterbox-vllm/blob/master/README.md"
+"Source" = "https://github.com/randombk/chatterbox-vllm"
+"Tracker" = "https://github.com/randombk/chatterbox-vllm/issues"
