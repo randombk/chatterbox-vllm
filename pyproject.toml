@@ -14,7 +14,15 @@ dependencies = [
     "torch",
     "torchaudio",
     "transformers",
-    "vllm"
+    "tokenizers",
+    "scipy",
+    "numpy",
+    "librosa",
+    "s3tokenizer",
+    "omegaconf",
+    "conformer",
+    "diffusers",
+    "vllm",
 ]
 
 [project.optional-dependencies]

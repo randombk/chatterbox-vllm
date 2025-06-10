@@ -6,6 +6,22 @@ __pycache__/
 build/
 dist/
 .venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+.history/
 
 # Generated environment files
 *.env
@@ -15,3 +31,7 @@ dist/
 # Test files
 *.mp3
 *.wav
+
+# OS
+.DS_Store
+Thumbs.db
