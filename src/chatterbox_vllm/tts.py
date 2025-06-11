@@ -1,9 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
-import os
+from typing import Optional
 
-from vllm import LLM, SamplingParams, ModelRegistry
+from vllm import LLM, SamplingParams
 
 import librosa
 import torch
@@ -11,14 +10,12 @@ import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
-from .models.t3 import T3
+from chatterbox_vllm.models.t3.modules.t3_config import T3Config
+
 from .models.s3tokenizer import S3_SR, drop_invalid_tokens
 from .models.s3gen import S3GEN_SR, S3Gen
-from .models.tokenizers import EnTokenizer
 from .models.voice_encoder import VoiceEncoder
 from .models.t3.modules.cond_enc import T3Cond
-
-ModelRegistry.register_model("ChatterboxT3", T3)
 
 REPO_ID = "ResembleAI/chatterbox"
 
@@ -62,6 +59,12 @@ def punc_norm(text: str) -> str:
         text += "."
 
     return text
+
+
+def _ensure_BOT_EOT(text_tokens: torch.Tensor, hp):
+    B = text_tokens.size(0)
+    assert (text_tokens == hp.start_text_token).int().sum() >= B, "missing start_text_token"
+    assert (text_tokens == hp.stop_text_token).int().sum() >= B, "missing stop_text_token"
 
 
 @dataclass
@@ -112,7 +115,7 @@ class ChatterboxTTS:
 
     def __init__(
         self,
-        t3: T3,
+        t3: LLM,
         s3gen: S3Gen,
         ve: VoiceEncoder,
         conds: Conditionals = None,
@@ -136,23 +139,6 @@ class ChatterboxTTS:
         )
         ve.to('cuda').eval()
 
-        # t3 = LLM(model=f"{os.path.dirname(os.path.abspath(__file__))}/models/t3")
-        t3 = LLM(
-            model=f"./model-dev",
-            task="generate",
-            tokenizer="EnTokenizer",
-            tokenizer_mode="custom",
-            max_model_len=10000,
-        )
-        # t3.to('cuda').eval()
-
-        # t3 = T3()
-        # t3_state = load_file(ckpt_dir / "t3_cfg.safetensors")
-        # if "model" in t3_state.keys():
-        #     t3_state = t3_state["model"][0]
-        # t3.load_state_dict(t3_state)
-        # t3.to('cuda').eval()
-
         s3gen = S3Gen()
         s3gen.load_state_dict(
             load_file(ckpt_dir / "s3gen.safetensors"), strict=False
@@ -165,7 +151,16 @@ class ChatterboxTTS:
 
         conds = None
         if (builtin_voice := ckpt_dir / "conds.pt").exists():
-            conds = Conditionals.load(builtin_voice, map_location=map_location).to('cuda')
+            conds = Conditionals.load(builtin_voice, map_location='cuda')
+
+        t3 = LLM(
+            model=f"./model-dev",
+            task="generate",
+            tokenizer="EnTokenizer",
+            tokenizer_mode="custom",
+            max_model_len=10000,
+            gpu_memory_utilization=0.6,
+        )
 
         return cls(t3, s3gen, ve, conds=conds)
 
@@ -183,10 +178,11 @@ class ChatterboxTTS:
         ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
 
         s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]
-        s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR='cuda')
+        s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR, device=self.s3gen.device)
 
         # Speech cond prompt tokens
-        if plen := self.t3.hp.speech_cond_prompt_len:
+        self.hp = T3Config()
+        if plen := self.hp.speech_cond_prompt_len:
             s3_tokzr = self.s3gen.tokenizer
             t3_cond_prompt_tokens, _ = s3_tokzr.forward([ref_16k_wav[:self.ENC_COND_LEN]], max_len=plen)
             t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens).to('cuda')
@@ -200,7 +196,41 @@ class ChatterboxTTS:
             cond_prompt_speech_tokens=t3_cond_prompt_tokens,
             emotion_adv=exaggeration * torch.ones(1, 1, 1),
         ).to(device='cuda')
+
         self.conds = Conditionals(t3_cond, s3gen_ref_dict)
+
+
+
+    def prepare_input_embeds(
+        self,
+        *,
+        t3_cond: T3Cond,
+        text_tokens: torch.LongTensor,
+        speech_tokens: torch.LongTensor,
+        cfg_weight: float = 0.0,
+    ):
+        # prepare input embeddings (skip backbone tranformer embeddings)
+        cond_emb = self.prepare_conditioning(t3_cond)  # (B, len_cond, dim)
+        text_emb = self.text_emb(text_tokens)  # (B, len_text, dim)
+        if cfg_weight > 0.0:
+            text_emb[1].zero_()  # CFG uncond
+
+        speech_emb = self.speech_emb(speech_tokens)  # (B, len_speech, dim)
+        if self.hp.input_pos_emb == "learned":
+            text_emb = text_emb + self.text_pos_emb(text_tokens)
+            speech_emb = speech_emb + self.speech_pos_emb(speech_tokens)
+        len_cond = cond_emb.size(1)
+
+        if cond_emb.size(0) != text_emb.size(0):
+             cond_emb = cond_emb.expand(text_emb.size(0), -1, -1)
+
+        # concat
+        embeds = torch.stack([
+            torch.cat((ce, te, se))
+            for ce, te, se in zip(cond_emb, text_emb, speech_emb)
+        ])  # (B, length, dim)
+        return embeds, len_cond
+    
 
     def generate(
         self,
@@ -226,26 +256,22 @@ class ChatterboxTTS:
 
         # Norm and tokenize text
         text = punc_norm(text)
-        text_tokens = self.tokenizer.text_to_tokens(text).to('cuda')
-
-        if cfg_weight > 0.0:
-            text_tokens = torch.cat([text_tokens, text_tokens], dim=0)  # Need two seqs for CFG
-
-        sot = self.t3.hp.start_text_token
-        eot = self.t3.hp.stop_text_token
-        text_tokens = F.pad(text_tokens, (1, 0), value=sot)
-        text_tokens = F.pad(text_tokens, (0, 1), value=eot)
 
         with torch.inference_mode():
-            speech_tokens = self.t3.inference(
-                t3_cond=self.conds.t3,
-                text_tokens=text_tokens,
-                max_new_tokens=1000,  # TODO: use the value in config
-                temperature=temperature,
-                cfg_weight=cfg_weight,
+            
+            speech_tokens = self.t3.generate(
+                [text],
+                sampling_params=SamplingParams(
+                    temperature=temperature,
+                    # cfg_weight=cfg_weight,
+                )
             )
+
             # Extract only the conditional batch.
-            speech_tokens = speech_tokens[0]
+            speech_tokens = speech_tokens[0].outputs[0].token_ids
+
+            # Convert to tensor
+            speech_tokens = torch.tensor(speech_tokens)
 
             # TODO: output becomes 1D
             speech_tokens = drop_invalid_tokens(speech_tokens)

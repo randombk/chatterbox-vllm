@@ -122,3 +122,7 @@ class EnTokenizer(PreTrainedTokenizer):
         txt = txt.replace(EOT, '')
         txt = txt.replace(UNK, '')
         return txt
+
+    @property
+    def max_token_id(self) -> int:
+        return max(self.tokenizer.get_vocab().values())

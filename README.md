@@ -6,7 +6,7 @@ This is a port of https://github.com/resemble-ai/chatterbox to VLLM
 
 This does not work in its current state. Significant model components still need to be ported over to vLLM before this is close to working.
 
-Currently, only a very limited subset of the patch T3 Llama model has been ported, and is able to load the weights and get past early engine init. However conditioning has not been implemented.
+Currently, only a very limited subset of the patch T3 Llama model has been ported, and is able to load the weights and generate _something_. However, there's still much to do in terms of implementing the right audio and text conditioning.
 
 I expect my work on this will pause until mid-July, but PRs are welcome.
 
