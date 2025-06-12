@@ -100,13 +100,11 @@ class AttentionQKV(nn.Module):
         return out
 
     def split_heads(self, x: torch.Tensor):
-        print("AttentionQKV split_heads", x.shape)
         length, _ = x.shape
         x = x.view(length, self.n_heads, self.head_dim)
         return x.permute(1, 0, 2)
 
     def combine_heads(self, x: torch.Tensor):
-        print("AttentionQKV combine_heads", x.shape)
         _, length, _ = x.shape
         x = x.permute(1, 0, 2).contiguous()
         return x.view(length, -1)

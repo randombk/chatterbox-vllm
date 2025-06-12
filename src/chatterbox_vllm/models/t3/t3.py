@@ -175,8 +175,8 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
         # We are going to apply custom logic to squish the embeddings in the right format.
         # The final embedding will look like <| cond | text | speech |>
         n_cond_tokens = 34 # 1 for speaker_emb, 0 for clap_emb, 32 for cond_prompt_speech_emb, 1 for emotion_adv
-        prompt = "[START]" * n_cond_tokens + prompt
-        prompt_ids = [prompt_ids[0]] * n_cond_tokens + prompt_ids
+        prompt = "[START]" * n_cond_tokens + prompt + "[STOP]"
+        prompt_ids = [prompt_ids[0]] * n_cond_tokens + prompt_ids + [0]
 
         return MultiModalInputs(
             type="multimodal",
@@ -207,26 +207,26 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         self.tfmr = LlamaModel(vllm_config=vllm_config, prefix=prefix)
 
         # Initialize custom components
-        t3enc_config = T3Config()
-        self.dim = t3enc_config.n_channels
-        self.cond_enc = T3CondEnc(t3enc_config)
-        self.text_emb = nn.Embedding(t3enc_config.text_tokens_dict_size, self.dim)
-        self.speech_emb = nn.Embedding(t3enc_config.speech_tokens_dict_size, self.dim)
+        self.t3conf = T3Config()
+        self.dim = self.t3conf.n_channels
+        self.cond_enc = T3CondEnc(self.t3conf)
+        self.text_emb = nn.Embedding(self.t3conf.text_tokens_dict_size, self.dim)
+        self.speech_emb = nn.Embedding(self.t3conf.speech_tokens_dict_size, self.dim)
 
         # custom position embedding
-        if t3enc_config.input_pos_emb == "learned":
-            max_text_seq_len = t3enc_config.max_text_tokens + 2
+        if self.t3conf.input_pos_emb == "learned":
+            max_text_seq_len = self.t3conf.max_text_tokens + 2
             self.text_pos_emb = LearnedPositionEmbeddings(max_text_seq_len, self.dim)
 
-            max_mel_seq_len = t3enc_config.max_speech_tokens + 2 + 2
+            max_mel_seq_len = self.t3conf.max_speech_tokens + 2 + 2
             self.speech_pos_emb = LearnedPositionEmbeddings(max_mel_seq_len, self.dim)
 
         # logit projection
         # self.text_head = nn.Linear(self.dim, t3enc_config.text_tokens_dict_size, bias=False)
-        # self.speech_head = nn.Linear(self.dim, t3enc_config.speech_tokens_dict_size, bias=False)
-        self.text_head = ParallelLMHead(t3enc_config.text_tokens_dict_size, self.dim, prefix=prefix)
-        self.speech_head = ParallelLMHead(t3enc_config.speech_tokens_dict_size, self.dim, prefix=prefix)
-        self.logits_processor = LogitsProcessor(t3enc_config.speech_tokens_dict_size)
+        self.speech_head = nn.Linear(self.dim, self.t3conf.speech_tokens_dict_size, bias=False)
+        self.text_head = ParallelLMHead(self.t3conf.text_tokens_dict_size, self.dim, prefix=prefix)
+        # self.speech_head = ParallelLMHead(self.t3conf.speech_tokens_dict_size, self.dim, prefix=prefix)
+        self.logits_processor = LogitsProcessor(self.t3conf.speech_tokens_dict_size)
 
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -284,13 +284,36 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         input_ids: torch.Tensor,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
-        print("get_input_embeddings", input_ids.shape if input_ids is not None else None)
-        print("get_input_embeddings", [i.shape for i in (multimodal_embeddings or [])])
-        return self.speech_emb(input_ids)
+        # There's two variants of this (at least, without batching. We'll implement batching support later...)
+        # Variant 1: encoding - we'll squish things into the right format of <| cond | text | start_of_speech |>
+        # Variant 2: decoding - we'll do things one token at a time.
+
+        if len(input_ids) == 1:
+            # We're decoding.
+            return self.speech_emb(input_ids)
+        else:
+            if multimodal_embeddings is None or len(multimodal_embeddings) == 0:
+                # Something's weird, or we're bootstrapping.
+                return self.speech_emb(input_ids)
+        
+            # We're encoding. The first 34 tokens are the cond portion. The rest are the text portion.
+            conds = multimodal_embeddings[0]
+            text_ids = input_ids[34:-1]
+            text_emb = self.text_emb(text_ids)
+            start_of_speech_emb = self.speech_emb(torch.tensor([self.t3conf.start_speech_token]).to(input_ids.device))
+            embeds = torch.cat([conds, text_emb, start_of_speech_emb], dim=0)
+            print("embeds", embeds.shape, embeds)
+            return embeds
 
 
     def compute_logits(self, hidden_states: torch.Tensor, sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        return self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
+        logits = self.speech_head(hidden_states)
+        # # print("hidden_states", hidden_states.shape, hidden_states)
+        # # logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
+        # # print the logit with the highest probability
+        print("logits", logits)
+        print("logit with the highest probability", logits.argmax())
+        return logits
 
 
     def forward(

@@ -197,12 +197,15 @@ class ChatterboxTTS:
                 sampling_params=SamplingParams(
                     temperature=temperature,
                     # cfg_weight=cfg_weight,
+                    stop_token_ids=[self.hp.stop_speech_token],
+                    top_k=1,
+                    max_tokens=800,
                 )
             )
 
             # Extract only the conditional batch.
             speech_tokens = speech_tokens[0].outputs[0].token_ids
-            # print(speech_tokens)
+            print(speech_tokens)
 
             # Convert to tensor
             speech_tokens = torch.tensor(speech_tokens)
