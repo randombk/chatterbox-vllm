@@ -17,11 +17,9 @@ from vllm.multimodal.parse import MultiModalDataParser, ModalityDataItems
 from vllm.multimodal.processing import (
     BaseMultiModalProcessor,
     BaseProcessingInfo,
-    EmbeddingItems,
     MultiModalDataDict,
     MultiModalDataItems,
     MultiModalFieldConfig,
-    PromptReplacement,
     PromptUpdate,
     MultiModalInputs,
     PlaceholderRange,
@@ -48,16 +46,8 @@ class T3MultiModalDummyInputsBuilder(BaseDummyInputsBuilder):
         return "[START]Hello, world![STOP]"
     
     def get_dummy_mm_data(self, seq_len: int, mm_counts: Mapping[str, int]) -> MultiModalDataDict:
+        # This is hacked around in the get_multimodal_embeddings method for now.
         return { "conditionals": None }
-        # return { "conditionals": [torch.tensor([1, 2, 3])] }
-        # return { 
-        #     "conditionals": T3Cond(
-        #         speaker_emb=torch.tensor([1, 2, 3]),
-        #         clap_emb=torch.tensor([4, 5, 6]),
-        #         cond_prompt_speech_tokens=torch.tensor([7, 8, 9]),
-        #         cond_prompt_speech_emb=torch.tensor([10, 11, 12])
-        #     )
-        # }
 
 
 class T3MultiModalDataParser(MultiModalDataParser):
@@ -152,8 +142,10 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
         2. Find and update sequences in the token IDs with placeholder tokens.
            The number of placeholder tokens equals the feature size of the
            multi-modal data outputted by the multi-modal encoder.
+           (SKIPPED for T3 conditioning)
         3. Extract information about the placeholder tokens from the
            processed token IDs.
+           (Stubbed for T3 conditioning)
         """
         mm_items = self._to_mm_items(mm_data)
     
@@ -228,9 +220,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             self.speech_pos_emb = LearnedPositionEmbeddings(max_mel_seq_len, self.dim)
 
         # logit projection
-        self.text_head = nn.Linear(self.dim, t3enc_config.text_tokens_dict_size, bias=False)
+        # self.text_head = nn.Linear(self.dim, t3enc_config.text_tokens_dict_size, bias=False)
         # self.speech_head = nn.Linear(self.dim, t3enc_config.speech_tokens_dict_size, bias=False)
-
+        self.text_head = ParallelLMHead(t3enc_config.text_tokens_dict_size, self.dim, prefix=prefix)
         self.speech_head = ParallelLMHead(t3enc_config.speech_tokens_dict_size, self.dim, prefix=prefix)
         self.logits_processor = LogitsProcessor(t3enc_config.speech_tokens_dict_size)
 
@@ -266,28 +258,20 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         if conditionals is None:
             return torch.zeros(256, 1, self.dim)
         
-        # WIP
-        return torch.zeros(len(conditionals), 1, self.dim)
-        
         result = []
         for batch in conditionals:
-            t3_cond = batch
-
-            if not isinstance(t3_cond, T3Cond):
-                print(t3_cond)
-                t3_cond = t3_cond[0]
-
-            if not isinstance(t3_cond, T3Cond):
-                print(t3_cond)
-                t3_cond = t3_cond[0]
-
-            if not isinstance(t3_cond, T3Cond):
-                print(t3_cond)
-                t3_cond = t3_cond[0]
-
-            if t3_cond.cond_prompt_speech_tokens is not None and t3_cond.cond_prompt_speech_emb is None:
-                t3_cond.cond_prompt_speech_emb = self.speech_emb(t3_cond.cond_prompt_speech_tokens) + \
-                    self.speech_pos_emb(t3_cond.cond_prompt_speech_tokens)
+            speaker_emb, clap_emb, cond_prompt_speech_tokens, cond_prompt_speech_emb, emotion_adv = batch[0]
+            
+            if cond_prompt_speech_tokens.shape != (0,) and cond_prompt_speech_emb.shape == (0,):
+                cond_prompt_speech_emb = self.speech_emb(cond_prompt_speech_tokens) + self.speech_pos_emb(cond_prompt_speech_tokens)
+            
+            t3_cond = T3Cond(
+                speaker_emb=speaker_emb,
+                clap_emb=clap_emb,
+                cond_prompt_speech_tokens=cond_prompt_speech_tokens,
+                cond_prompt_speech_emb=cond_prompt_speech_emb,
+                emotion_adv=emotion_adv
+            )
             result.append(self.cond_enc(t3_cond))
         return result
 
@@ -314,10 +298,10 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: object,
     ) -> torch.Tensor:
-        print("forward", input_ids.shape if input_ids is not None else None)
-        print("forward", [i.shape for i in (intermediate_tensors or [])])
-        print("forward", inputs_embeds.shape if inputs_embeds is not None else None)
-        print("forward", kwargs.keys())
+        # print("forward get_multimodal_embeddings", input_ids.shape if input_ids is not None else None)
+        # print("forward intermediate_tensors", [i.shape for i in (intermediate_tensors or [])])
+        # print("forward inputs_embeds", inputs_embeds.shape if inputs_embeds is not None else None)
+        # print("forward kwargs", kwargs.keys())
 
         if intermediate_tensors is not None:
             inputs_embeds = None
@@ -336,12 +320,3 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
     def get_language_model(self) -> torch.nn.Module:
         return self.tfmr
 
-
-    def prepare_conditioning(self, t3_cond: T3Cond):
-        """
-        Token cond data needs to be embedded, so that needs to be here instead of in `T3CondEnc`.
-        """
-        if t3_cond.cond_prompt_speech_tokens is not None and t3_cond.cond_prompt_speech_emb is None:
-            t3_cond.cond_prompt_speech_emb = self.speech_emb(t3_cond.cond_prompt_speech_tokens) + \
-                self.speech_pos_emb(t3_cond.cond_prompt_speech_tokens)
-        return self.cond_enc(t3_cond)  # (B, len_cond, dim)

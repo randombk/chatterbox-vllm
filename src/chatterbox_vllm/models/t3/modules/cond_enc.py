@@ -15,25 +15,36 @@ class T3Cond(nn.Module):
     TODO: serialization methods aren't used, keeping them around for convenience
     """
 
-    speaker_emb: Tensor
-    clap_emb: Optional[Tensor] = None
-    cond_prompt_speech_tokens: Optional[Tensor] = None
-    cond_prompt_speech_emb: Optional[Tensor] = None
-    emotion_adv: Optional[Tensor] = 0.5
+    speaker_emb: Tensor = torch.ones(0)
+    clap_emb: Tensor = torch.ones(0)
+    cond_prompt_speech_tokens: Tensor = torch.ones(0)
+    cond_prompt_speech_emb: Tensor = torch.ones(0)
+    emotion_adv: Tensor = 0.5 * torch.ones(1, 1)
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        for k, v in kwargs.items():
+            if v is None:
+                v = torch.ones(0)
+            elif k == 'cond_prompt_speech_emb' and len(v.shape) == 3:
+                # Remove batch dimension
+                v = v[0]
+            elif k == 'emotion_adv' and len(v.shape) == 3:
+                # Remove batch dimension
+                v = v[0]
+            setattr(self, k, v)
 
     def __iter__(self):
-        """Iterate over all tensor attributes in the class."""
-        for k, v in self.__dict__.items():
-            if torch.is_tensor(v):
-                yield v.cpu()
+        # HACK: we need to return a list of tensors, as that's how VLLM wants to pass in the conditionals.
+        # Everything will need to be encoded as a tensor.
 
-    def to(self, *, device=None, dtype=None):
-        "Cast to a device and dtype. Dtype casting is ignored for long/int tensors."
-        for k, v in self.__dict__.items():
-            if torch.is_tensor(v):
-                is_fp = type(v.view(-1)[0].item()) is not int
-                setattr(self, k, v.to(device=device, dtype=dtype if is_fp else None))
-        return self
+        return [
+            self.speaker_emb,
+            self.clap_emb,
+            self.cond_prompt_speech_tokens,
+            self.cond_prompt_speech_emb,
+            self.emotion_adv
+        ].__iter__()
 
     def save(self, fpath):
         torch.save(self.__dict__, fpath)
@@ -56,7 +67,7 @@ class T3CondEnc(nn.Module):
             self.spkr_enc = nn.Linear(hp.speaker_embed_size, hp.n_channels)
         else:
             raise NotImplementedError(str(hp.encoder_type))
-
+        
         # emotion adv
         self.emotion_adv_fc = None
         if hp.emotion_adv:
@@ -69,29 +80,38 @@ class T3CondEnc(nn.Module):
 
     def forward(self, cond: T3Cond):
         # Validate
-        assert (cond.cond_prompt_speech_tokens is None) == (cond.cond_prompt_speech_emb is None), \
+        assert (cond.cond_prompt_speech_tokens.shape == (0,)) == (cond.cond_prompt_speech_emb.shape == (0,)), \
             "no embeddings for cond_prompt_speech_tokens"
 
-        # Speaker embedding projection
-        cond_spkr = self.spkr_enc(cond.speaker_emb.view(-1, self.hp.speaker_embed_size))[:, None]  # (B, 1, dim)
-        empty = torch.zeros_like(cond_spkr[:, :0])  # (B, 0, dim)
+        print("T3CondEnc speaker_emb", cond.speaker_emb.shape)
+        cond_spkr = self.spkr_enc(cond.speaker_emb.view(self.hp.speaker_embed_size))
+        cond_spkr = cond_spkr.unsqueeze(0)  # (dim,) -> (1, dim) - add sequence dimension
+        
+        empty = torch.zeros(0, cond_spkr.shape[-1], device=cond_spkr.device, dtype=cond_spkr.dtype)  # (0, dim)
+        print("T3CondEnc cond_spkr", cond_spkr.shape)  # Should print torch.Size([1, dim])
 
         # TODO CLAP
-        assert cond.clap_emb is None, "clap_embed not implemented"
-        cond_clap = empty  # (B, 0, dim)
+        assert cond.clap_emb.shape == (0,), "clap_embed not implemented"
+        cond_clap = empty  # (0, dim)
 
         # Cond prompt
         cond_prompt_speech_emb = cond.cond_prompt_speech_emb
-        if cond_prompt_speech_emb is None:
-            cond_prompt_speech_emb = empty  # (B, 0, dim)
+        print("T3CondEnc cond_prompt_speech_emb 1", cond_prompt_speech_emb.shape)
+        if cond_prompt_speech_emb.shape == (0,):
+            cond_prompt_speech_emb = empty  # (0, dim)
         elif self.hp.use_perceiver_resampler:
             cond_prompt_speech_emb = self.perceiver(cond_prompt_speech_emb)
 
         # Emotion Adv: must provide a value if this model uses emotion conditioning
-        cond_emotion_adv = empty  # (B, 0, dim)
+        cond_emotion_adv = empty  # (0, dim)
         if self.hp.emotion_adv:
-            assert cond.emotion_adv is not None
-            cond_emotion_adv = self.emotion_adv_fc(cond.emotion_adv.view(-1, 1, 1))
+            assert cond.emotion_adv.shape != (0,)
+            cond_emotion_adv = self.emotion_adv_fc(cond.emotion_adv)
+
+        print("T3CondEnc cond_spkr", cond_spkr.shape, cond_spkr.device)
+        print("T3CondEnc cond_clap", cond_clap.shape, cond_clap.device)
+        print("T3CondEnc cond_prompt_speech_emb", cond_prompt_speech_emb.shape, cond_prompt_speech_emb.device)
+        print("T3CondEnc cond_emotion_adv", cond_emotion_adv.shape, cond_emotion_adv.device)
 
         # Concat and return
         cond_embeds = torch.cat((
@@ -99,5 +119,5 @@ class T3CondEnc(nn.Module):
             cond_clap,
             cond_prompt_speech_emb,
             cond_emotion_adv,
-        ), dim=1)
+        ), dim=0)
         return cond_embeds

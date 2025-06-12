@@ -99,15 +99,17 @@ class AttentionQKV(nn.Module):
             )
         return out
 
-    def split_heads(self, x):
-        bs, length, _ = x.shape
-        x = x.view(bs, length, self.n_heads, self.head_dim)
-        return x.permute(0, 2, 1, 3)
+    def split_heads(self, x: torch.Tensor):
+        print("AttentionQKV split_heads", x.shape)
+        length, _ = x.shape
+        x = x.view(length, self.n_heads, self.head_dim)
+        return x.permute(1, 0, 2)
 
-    def combine_heads(self, x):
-        bs, _, length, _ = x.shape
-        x = x.permute(0, 2, 1, 3).contiguous()
-        return x.view(bs, length, -1)
+    def combine_heads(self, x: torch.Tensor):
+        print("AttentionQKV combine_heads", x.shape)
+        _, length, _ = x.shape
+        x = x.permute(1, 0, 2).contiguous()
+        return x.view(length, -1)
 
 
 class AttentionBlock2(nn.Module):
@@ -185,7 +187,7 @@ class Perceiver(nn.Module):
 
         # Initialize the pre-attention query parameter
         self.pre_attention_query = torch.nn.Parameter(
-            torch.empty(1, pre_attention_query_token, pre_attention_query_size)
+            torch.empty(pre_attention_query_token, pre_attention_query_size)
         )
 
         # Calculate the variance for uniform initialization
@@ -204,7 +206,7 @@ class Perceiver(nn.Module):
         :return: Output after applying attention mechanisms
         """
         # Expand the pre-attention query to match the batch size of the input
-        query_ = self.pre_attention_query.expand(h.shape[0], -1, -1)
+        query_ = self.pre_attention_query.expand(-1, -1)
         # Apply the first attention mechanism (cross-attention)
         pre_att = self.attn(query_, h)
         # Apply the second attention mechanism (self-attention)

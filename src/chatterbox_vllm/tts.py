@@ -81,13 +81,6 @@ class Conditionals:
     t3: T3Cond
     gen: dict
 
-    def to(self, device="cuda"):
-        self.t3 = self.t3.to(device=device)
-        for k, v in self.gen.items():
-            if torch.is_tensor(v):
-                self.gen[k] = v.to(device=device)
-        return self
-
     @classmethod
     def load(cls, fpath):
         kwargs = torch.load(fpath, weights_only=True)
@@ -112,13 +105,13 @@ class ChatterboxTTS:
 
         ve = VoiceEncoder()
         ve.load_state_dict(load_file(ckpt_dir / "ve.safetensors"))
-        ve.to("cuda").eval()
+        ve.eval()
 
         s3gen = S3Gen()
         s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
-        s3gen.to("cuda").eval()
+        s3gen.eval()
 
-        conds = Conditionals.load(ckpt_dir / "conds.pt").to("cuda")
+        conds = Conditionals.load(ckpt_dir / "conds.pt")
 
         t3 = LLM(
             model=f"./t3-model",
@@ -147,22 +140,22 @@ class ChatterboxTTS:
         ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
 
         s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]
-        s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR, device=self.s3gen.device)
+        s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR)
 
         # Speech cond prompt tokens
         s3_tokzr = self.s3gen.tokenizer
         t3_cond_prompt_tokens, _ = s3_tokzr.forward([ref_16k_wav[:self.ENC_COND_LEN]], max_len=self.hp.speech_cond_prompt_len)
-        t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens).to('cuda')
+        t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens)
 
         # Voice-encoder speaker embedding
         ve_embed = torch.from_numpy(self.ve.embeds_from_wavs([ref_16k_wav], sample_rate=S3_SR))
-        ve_embed = ve_embed.mean(axis=0, keepdim=True).to('cuda')
+        ve_embed = ve_embed.mean(axis=0, keepdim=True)
 
         t3_cond = T3Cond(
             speaker_emb=ve_embed,
             cond_prompt_speech_tokens=t3_cond_prompt_tokens,
-            emotion_adv=exaggeration * torch.ones(1, 1, 1),
-        ).to(device='cuda')
+            emotion_adv=exaggeration * torch.ones(1, 1),
+        )
 
         self.conds = Conditionals(t3_cond, s3gen_ref_dict)
 
@@ -180,13 +173,13 @@ class ChatterboxTTS:
             assert self.conds is not None, "Please `prepare_audio_conditionals` first or specify `audio_prompt_path`"
 
         # Update exaggeration if needed
-        if exaggeration != self.conds.t3.emotion_adv[0, 0, 0]:
+        if exaggeration != self.conds.t3.emotion_adv[0, 0]:
             _cond: T3Cond = self.conds.t3
             self.conds.t3 = T3Cond(
                 speaker_emb=_cond.speaker_emb,
                 cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
-                emotion_adv=exaggeration * torch.ones(1, 1, 1),
-            ).to(device='cuda')
+                emotion_adv=exaggeration * torch.ones(1, 1),
+            )
 
         # cond_emb = self.prepare_conditioning(self.conds.t3)  # (B, len_cond, dim)
 
@@ -219,7 +212,7 @@ class ChatterboxTTS:
             
             speech_tokens = speech_tokens[speech_tokens < 6561]
 
-            speech_tokens = speech_tokens.to('cuda')
+            speech_tokens = speech_tokens.to('cpu')
 
             wav, _ = self.s3gen.inference(
                 speech_tokens=speech_tokens,
