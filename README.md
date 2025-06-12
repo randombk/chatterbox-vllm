@@ -4,11 +4,16 @@ This is a port of https://github.com/resemble-ai/chatterbox to VLLM
 
 # WORK IN PROGRESS
 
-This does not work in its current state. Significant model components still need to be ported over to vLLM before this is close to working.
+**This does not work in its current state.** Significant model components still need to be ported over to vLLM before this is close to working. The model technically runs and generates output, but only gibbrish is generated.
 
-Currently, only a very limited subset of the patch T3 Llama model has been ported, and is able to load the weights and generate _something_. However, there's still much to do in terms of implementing the right audio and text conditioning.
+**Current Status**:
+ * Most of the plumbing should be in place, but there' still _something_ wrong causing the model to generate complete gibberish.
+ * Something's definitely wrong with the embedding calculation, as it's generating embeddings that are significantly different from the official implementation given identical inputs. The shape of the tensors are correct, but the output is wrong. Auditing this codepath is the most critical part of the project right now.
+ * The KV caching logic is suspect, because I did not properly implement the caching key. That might be the source of the descrepancies, but it should not explain the embedding issues.
+ * The project is currently _very_ hacked together, using ugly workarounds and digging into VLLM internals to get things done. I'm sure there's a proper way or API to do most of the things I'm doing, but I couldn't find it.
+ * There's a lot of optimizations around moving the audio processing parts to/from GPU. For simplicity sake I moved them all to GPU until I could figure out what I want to do with them.
 
-I expect my work on this will pause until mid-July, but PRs are welcome.
+I expect my work on this will pause until mid-July, PRs are welcome.
 
 ## How to set up dev environment
 

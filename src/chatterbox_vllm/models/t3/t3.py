@@ -300,7 +300,13 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             conds = multimodal_embeddings[0]
             text_ids = input_ids[34:-1]
             text_emb = self.text_emb(text_ids)
-            start_of_speech_emb = self.speech_emb(torch.tensor([self.t3conf.start_speech_token]).to(input_ids.device))
+            speech_tokens = torch.tensor([self.t3conf.start_speech_token]).to(input_ids.device)
+            start_of_speech_emb = self.speech_emb(speech_tokens)
+
+            if self.t3conf.input_pos_emb == "learned":
+                text_emb = text_emb + self.text_pos_emb(text_ids.unsqueeze(0))[0]
+                start_of_speech_emb = start_of_speech_emb + self.speech_pos_emb(speech_tokens.unsqueeze(0))[0]
+
             embeds = torch.cat([conds, text_emb, start_of_speech_emb], dim=0)
             print("embeds", embeds.shape, embeds)
             return embeds
@@ -311,8 +317,8 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # # print("hidden_states", hidden_states.shape, hidden_states)
         # # logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
         # # print the logit with the highest probability
-        print("logits", logits)
-        print("logit with the highest probability", logits.argmax())
+        # print("logits", logits)
+        # print("logit with the highest probability", logits.argmax())
         return logits
 
 
