@@ -223,9 +223,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
 
         # logit projection
         # self.text_head = nn.Linear(self.dim, t3enc_config.text_tokens_dict_size, bias=False)
-        self.speech_head = nn.Linear(self.dim, self.t3conf.speech_tokens_dict_size, bias=False)
+        # self.speech_head = nn.Linear(self.dim, self.t3conf.speech_tokens_dict_size, bias=False)
         self.text_head = ParallelLMHead(self.t3conf.text_tokens_dict_size, self.dim, prefix=prefix)
-        # self.speech_head = ParallelLMHead(self.t3conf.speech_tokens_dict_size, self.dim, prefix=prefix)
+        self.speech_head = ParallelLMHead(self.t3conf.speech_tokens_dict_size, self.dim, prefix=prefix)
         self.logits_processor = LogitsProcessor(self.t3conf.speech_tokens_dict_size)
 
 
@@ -244,8 +244,10 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             attr, subname = name.split('.', 1)
             state_dict = state_dicts.get(attr, {})
             state_dict[subname] = weight
+            state_dicts[attr] = state_dict
 
         for attr, state_dict in state_dicts.items():
+            print("Loading weights:", attr, state_dict.keys())
             getattr(self, attr).load_state_dict(state_dict)
 
         llama_loaded_params = self.tfmr.load_weights(hf_llama_weights.items())
@@ -266,7 +268,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             speaker_emb, clap_emb, cond_prompt_speech_tokens, cond_prompt_speech_emb, emotion_adv = batch[0]
             
             if cond_prompt_speech_tokens.shape != (0,) and cond_prompt_speech_emb.shape == (0,):
-                cond_prompt_speech_emb = self.speech_emb(cond_prompt_speech_tokens) + self.speech_pos_emb(cond_prompt_speech_tokens)
+                cond_prompt_speech_emb = self.speech_emb(cond_prompt_speech_tokens)[0] + self.speech_pos_emb(cond_prompt_speech_tokens)
             
             t3_cond = T3Cond(
                 speaker_emb=speaker_emb,
@@ -299,9 +301,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             # We're encoding. The first 34 tokens are the cond portion. The rest are the text portion.
             conds = multimodal_embeddings[0]
             text_ids = input_ids[34:-1]
-            text_emb = self.text_emb(text_ids)
+            text_emb = self.text_emb(text_ids.unsqueeze(0))[0]
             speech_tokens = torch.tensor([self.t3conf.start_speech_token]).to(input_ids.device)
-            start_of_speech_emb = self.speech_emb(speech_tokens)
+            start_of_speech_emb = self.speech_emb(speech_tokens.unsqueeze(0))[0]
 
             if self.t3conf.input_pos_emb == "learned":
                 text_emb = text_emb + self.text_pos_emb(text_ids.unsqueeze(0))[0]
@@ -313,11 +315,11 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
 
 
     def compute_logits(self, hidden_states: torch.Tensor, sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        logits = self.speech_head(hidden_states)
+        # logits = self.speech_head(hidden_states)
         # # print("hidden_states", hidden_states.shape, hidden_states)
-        # # logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
+        logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
         # # print the logit with the highest probability
-        # print("logits", logits)
+        print("logits", logits)
         # print("logit with the highest probability", logits.argmax())
         return logits
 

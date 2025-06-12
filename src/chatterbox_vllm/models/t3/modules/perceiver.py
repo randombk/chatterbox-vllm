@@ -185,7 +185,7 @@ class Perceiver(nn.Module):
 
         # Initialize the pre-attention query parameter
         self.pre_attention_query = torch.nn.Parameter(
-            torch.empty(pre_attention_query_token, pre_attention_query_size)
+            torch.empty(1, pre_attention_query_token, pre_attention_query_size)
         )
 
         # Calculate the variance for uniform initialization
@@ -204,7 +204,7 @@ class Perceiver(nn.Module):
         :return: Output after applying attention mechanisms
         """
         # Expand the pre-attention query to match the batch size of the input
-        query_ = self.pre_attention_query.expand(-1, -1)
+        query_ = self.pre_attention_query[0].expand(-1, -1)
         # Apply the first attention mechanism (cross-attention)
         pre_att = self.attn(query_, h)
         # Apply the second attention mechanism (self-attention)
