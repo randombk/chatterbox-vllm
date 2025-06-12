@@ -23,6 +23,8 @@ from vllm.multimodal.processing import (
     PromptUpdate,
     MultiModalInputs,
     PlaceholderRange,
+    PromptReplacement,
+    PromptUpdate,
 )
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
@@ -47,7 +49,7 @@ class T3MultiModalDummyInputsBuilder(BaseDummyInputsBuilder):
     
     def get_dummy_mm_data(self, seq_len: int, mm_counts: Mapping[str, int]) -> MultiModalDataDict:
         # This is hacked around in the get_multimodal_embeddings method for now.
-        return { "conditionals": None }
+        return { "conditionals": [torch.zeros(0)] * mm_counts["conditionals"] }
 
 
 class T3MultiModalDataParser(MultiModalDataParser):
@@ -77,11 +79,11 @@ class ConditionalsEmbeddingItems(ModalityDataItems[T3Cond, T3Cond]):
     def get_passthrough_data(self) -> Mapping[str, T3Cond]:
         return {"conditionals": self.data}
 
-    def get_feature_size(self, item_idx: int) -> int:
-        return len(self.data.speaker_emb) + \
-            (len(self.data.clap_emb) if self.data.clap_emb is not None else 0) + \
-            (len(self.data.cond_prompt_speech_tokens) if self.data.cond_prompt_speech_tokens is not None else 0) + \
-            (len(self.data.cond_prompt_speech_emb) if self.data.cond_prompt_speech_emb is not None else 0)
+    # def get_feature_size(self, item_idx: int) -> int:
+    #     return self.data.speaker_emb.shape[0] + \
+    #         self.data.clap_emb.shape[0] + \
+    #         self.data.cond_prompt_speech_tokens.shape[0] + \
+    #         self.data.cond_prompt_speech_emb.shape[0]
        
 
 class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
@@ -103,14 +105,21 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
         hf_processor_mm_kwargs: Mapping[str, object],
         out_mm_kwargs: MultiModalKwargs,
     ) -> Sequence[PromptUpdate]:
-        return [
-            # Delibrate noop
-            # PromptReplacement(
-            #     modality="conditionals",
-            #     target="[START]",
-            #     replacement="[START]",
-            # )
-        ]
+        # Bypassed via `apply` method.
+        return []
+        # if mm_items.get_all_counts().get('conditionals', 0) == 0:
+        #     return []
+
+        # return [
+        #     # The final embedding will look like <| cond | text | speech |>
+        #     # This will prepare the cond portion.
+        #     PromptReplacement(
+        #         modality="conditionals",
+        #         target="[START]",
+        #         # replacement=["[START]"] * (mm_items.get_items('conditionals', ConditionalsEmbeddingItems).get_feature_size(0) + 1),
+        #         replacement=["[START]"] * 15,
+        #     )
+        # ]
 
     def _call_hf_processor(
         self,
@@ -163,18 +172,11 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
             return_mm_hashes=False,
         )
 
-        # prompt_ids, prompt, mm_placeholders = self._maybe_apply_prompt_updates(
-        #     mm_items=mm_items,
-        #     hf_processor_mm_kwargs=hf_processor_mm_kwargs,
-        #     prompt_ids=prompt_ids,
-        #     mm_kwargs=mm_kwargs,
-        #     is_update_applied=is_update_applied,
-        # )
-
-        # mm_placeholder_ranges = {
-        #     modality: [item.to_range() for item in placeholders]
-        #     for modality, placeholders in mm_placeholders.items()
-        # }
+        # We are going to apply custom logic to squish the embeddings in the right format.
+        # The final embedding will look like <| cond | text | speech |>
+        n_cond_tokens = 34 # 1 for speaker_emb, 0 for clap_emb, 32 for cond_prompt_speech_emb, 1 for emotion_adv
+        prompt = "[START]" * n_cond_tokens + prompt
+        prompt_ids = [prompt_ids[0]] * n_cond_tokens + prompt_ids
 
         return MultiModalInputs(
             type="multimodal",
@@ -185,7 +187,7 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
                 "conditionals": ["foo"],
             },
             mm_placeholders={
-                "conditionals": [PlaceholderRange(offset=0, length=1, is_embed=None)]
+                "conditionals": [PlaceholderRange(offset=0, length=n_cond_tokens, is_embed=None)]
             },
         )
 
@@ -253,13 +255,14 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
 
 
     def get_multimodal_embeddings(self, **kwargs: object) -> Optional[MultiModalEmbeddings]:
-        conditionals: Optional[list[list[T3Cond]]] = kwargs.get("conditionals", None)
-        
-        if conditionals is None:
-            return torch.zeros(256, 1, self.dim)
+        conditionals: Optional[list[list[T3Cond]]] = kwargs.get("conditionals", [])
         
         result = []
         for batch in conditionals:
+            if len(batch[0]) == 0:
+                result.append(torch.zeros(34, self.dim))
+                continue
+
             speaker_emb, clap_emb, cond_prompt_speech_tokens, cond_prompt_speech_emb, emotion_adv = batch[0]
             
             if cond_prompt_speech_tokens.shape != (0,) and cond_prompt_speech_emb.shape == (0,):

@@ -88,7 +88,7 @@ class T3CondEnc(nn.Module):
         cond_spkr = cond_spkr.unsqueeze(0)  # (dim,) -> (1, dim) - add sequence dimension
         
         empty = torch.zeros(0, cond_spkr.shape[-1], device=cond_spkr.device, dtype=cond_spkr.dtype)  # (0, dim)
-        print("T3CondEnc cond_spkr", cond_spkr.shape)  # Should print torch.Size([1, dim])
+        print("T3CondEnc cond_spkr", cond_spkr.shape)
 
         # TODO CLAP
         assert cond.clap_emb.shape == (0,), "clap_embed not implemented"
