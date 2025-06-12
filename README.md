@@ -12,7 +12,7 @@ I expect my work on this will pause until mid-July, but PRs are welcome.
 
 ## How to set up dev environment
 
-1. The chatterbox model weights should exist in your HF cache. Fix the symlink inside `model-dev` if needed.
+1. The chatterbox model weights should exist in your HF cache. Fix the symlink inside `./t3-model` if needed. This is a temporary setup to unblock development, and will be replaced with a better setup once a MVP is up and running.
 1. Set up the environment via:
 
 ```
@@ -22,3 +22,7 @@ uv pip install -e .
 ```
 3. You should be able to run `python example-tts.py` and not have it crash.
 4. That's as far as things have gotten thus far.
+
+# Disclaimer
+
+THIS IS A PERSONAL PROJECT and is not affiliated with my employer in any way. The project is based solely on publicly-available information. All opinions are my own and do not necessarily represent the views of my employer.

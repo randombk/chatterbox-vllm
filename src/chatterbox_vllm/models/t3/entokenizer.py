@@ -104,11 +104,13 @@ class EnTokenizer(PreTrainedTokenizer):
         text_tokens = torch.IntTensor(text_tokens).unsqueeze(0)
         return text_tokens
 
-    def encode(self, txt: str, verbose=False):
+    def encode(self, txt: str, verbose=False, return_tensors: Optional[str] = None, add_special_tokens: bool = True):
         """Legacy method for backward compatibility"""
         txt = txt.replace(' ', SPACE)
         code = self.tokenizer.encode(txt)
         ids = code.ids
+        if return_tensors == "pt":
+            return torch.IntTensor(ids).unsqueeze(0)
         return ids
 
     def decode(self, seq):

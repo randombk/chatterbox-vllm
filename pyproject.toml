@@ -23,6 +23,7 @@ dependencies = [
     "conformer",
     "diffusers",
     "vllm",
+    "peft",
 ]
 
 [project.optional-dependencies]

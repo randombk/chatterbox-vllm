@@ -21,6 +21,12 @@ class T3Cond(nn.Module):
     cond_prompt_speech_emb: Optional[Tensor] = None
     emotion_adv: Optional[Tensor] = 0.5
 
+    def __iter__(self):
+        """Iterate over all tensor attributes in the class."""
+        for k, v in self.__dict__.items():
+            if torch.is_tensor(v):
+                yield v.cpu()
+
     def to(self, *, device=None, dtype=None):
         "Cast to a device and dtype. Dtype casting is ignored for long/int tensors."
         for k, v in self.__dict__.items():
