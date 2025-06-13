@@ -2,6 +2,7 @@ from typing import Iterable, Mapping, Optional, Sequence, Union
 
 import torch
 import torch.nn as nn
+import random
 from transformers.feature_extraction_utils import BatchFeature
 
 from vllm.config import VllmConfig, ModelConfig
@@ -184,7 +185,7 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
             prompt_token_ids=prompt_ids,
             mm_kwargs=mm_kwargs,
             mm_hashes={
-                "conditionals": ["foo"],
+                "conditionals": [str(random.random())],
             },
             mm_placeholders={
                 "conditionals": [PlaceholderRange(offset=0, length=n_cond_tokens, is_embed=None)]
@@ -222,23 +223,32 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             self.speech_pos_emb = LearnedPositionEmbeddings(max_mel_seq_len, self.dim)
 
         # logit projection
-        # self.text_head = nn.Linear(self.dim, t3enc_config.text_tokens_dict_size, bias=False)
-        # self.speech_head = nn.Linear(self.dim, self.t3conf.speech_tokens_dict_size, bias=False)
-        self.text_head = ParallelLMHead(self.t3conf.text_tokens_dict_size, self.dim, prefix=prefix)
-        self.speech_head = ParallelLMHead(self.t3conf.speech_tokens_dict_size, self.dim, prefix=prefix)
-        self.logits_processor = LogitsProcessor(self.t3conf.speech_tokens_dict_size)
+        self.text_head = nn.Linear(self.dim, self.t3conf.text_tokens_dict_size, bias=False)
+        self.speech_head = nn.Linear(self.dim, self.t3conf.speech_tokens_dict_size, bias=False)
+        # self.text_head = ParallelLMHead(self.t3conf.text_tokens_dict_size, self.dim, prefix=prefix, bias=False)
+        # self.speech_head = ParallelLMHead(self.t3conf.speech_tokens_dict_size, self.dim, prefix=prefix)
+        # self.logits_processor = LogitsProcessor(self.t3conf.speech_tokens_dict_size)
+        # self.speech_head.load_weights(self.speech_head.get_sharded_to_full_mapping())
 
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loaded_params: set[str] = set()
         state_dicts = {}
         hf_llama_weights = {}
+        # text_head_weights = {}
+        # speech_head_weights = {}
         for name, weight in weights:
             # Llama weights need to be passed through vllm's load_weights rather than load_state_dict
             if name.startswith("tfmr."):
                 subname = name[5:]
                 hf_llama_weights[subname] = weight
                 continue
+            # elif name.startswith("text_head."):
+            #     subname = name[10:]
+            #     text_head_weights[subname] = weight
+            # elif name.startswith("speech_head."):
+            #     subname = name[12:]
+            #     speech_head_weights[subname] = weight
 
             loaded_params.add(name)
             attr, subname = name.split('.', 1)
@@ -252,6 +262,12 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
 
         llama_loaded_params = self.tfmr.load_weights(hf_llama_weights.items())
         loaded_params.update('tfmr.' + i for i in llama_loaded_params)
+
+        # text_head_loaded_params = self.text_head.load_weights(text_head_weights.items())
+        # loaded_params.update('text_head.' + i for i in text_head_loaded_params)
+
+        # speech_head_loaded_params = self.speech_head.load_weights(speech_head_weights.items())
+        # loaded_params.update('speech_head.' + i for i in speech_head_loaded_params)
 
         return loaded_params
 
@@ -301,25 +317,33 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             # We're encoding. The first 34 tokens are the cond portion. The rest are the text portion.
             conds = multimodal_embeddings[0]
             text_ids = input_ids[34:-1]
-            text_emb = self.text_emb(text_ids.unsqueeze(0))[0]
+            text_emb = self.text_emb(text_ids)
+            # text_emb[1].zero_()  # CFG uncond
+            # print("text_emb", text_emb)
+
             speech_tokens = torch.tensor([self.t3conf.start_speech_token]).to(input_ids.device)
             start_of_speech_emb = self.speech_emb(speech_tokens.unsqueeze(0))[0]
 
             if self.t3conf.input_pos_emb == "learned":
-                text_emb = text_emb + self.text_pos_emb(text_ids.unsqueeze(0))[0]
+                text_emb = text_emb + self.text_pos_emb(text_ids.unsqueeze(0))
                 start_of_speech_emb = start_of_speech_emb + self.speech_pos_emb(speech_tokens.unsqueeze(0))[0]
 
             embeds = torch.cat([conds, text_emb, start_of_speech_emb], dim=0)
-            print("embeds", embeds.shape, embeds)
+            # print("text_ids", text_ids)
+            # print("text_emb", text_emb)
+            # print("embeds", embeds.shape, embeds)
             return embeds
 
 
     def compute_logits(self, hidden_states: torch.Tensor, sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        # logits = self.speech_head(hidden_states)
+        # print("hidden_states", hidden_states.shape)
+        logits = self.speech_head(hidden_states)
+        # print("logits", logits.shape)
         # # print("hidden_states", hidden_states.shape, hidden_states)
-        logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
+        # logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
         # # print the logit with the highest probability
-        print("logits", logits)
+        # print("logits", logits)
+        # logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
         # print("logit with the highest probability", logits.argmax())
         return logits
 
@@ -332,23 +356,10 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: object,
     ) -> torch.Tensor:
-        # print("forward get_multimodal_embeddings", input_ids.shape if input_ids is not None else None)
-        # print("forward intermediate_tensors", [i.shape for i in (intermediate_tensors or [])])
-        # print("forward inputs_embeds", inputs_embeds.shape if inputs_embeds is not None else None)
-        # print("forward kwargs", kwargs.keys())
-
-        if intermediate_tensors is not None:
-            inputs_embeds = None
-        elif inputs_embeds is None:
-            vision_embeddings = self.get_multimodal_embeddings(**kwargs)
-            inputs_embeds = self.get_input_embeddings(input_ids,
-                                                      vision_embeddings)
-            input_ids = None
-
-        hidden_states = self.tfmr(input_ids,
-                                            positions,
-                                            intermediate_tensors,
-                                            inputs_embeds=inputs_embeds)
+        print("inputs_embeds", inputs_embeds)
+        print("intermediate_tensors", intermediate_tensors)
+        print("kwargs", kwargs)
+        hidden_states = self.tfmr(input_ids, positions, intermediate_tensors, inputs_embeds=inputs_embeds)
         return hidden_states
 
     def get_language_model(self) -> torch.nn.Module:
