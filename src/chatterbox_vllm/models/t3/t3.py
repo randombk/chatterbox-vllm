@@ -125,8 +125,11 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
     def _call_hf_processor(
         self,
         prompt: str,
+        # Not to be confused with `mm_data` in `self.apply`.
+        # This refers to the data to be passed to HF processor.
         mm_data: Mapping[str, object],
         mm_kwargs: Mapping[str, object],
+        tok_kwargs: Mapping[str, object],
     ) -> BatchFeature:
         tokenizer = self.info.get_tokenizer()
         processed_outputs = tokenizer(prompt, return_tensors="pt")
@@ -140,6 +143,7 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
         prompt: Union[str, list[int]],
         mm_data: MultiModalDataDict,
         hf_processor_mm_kwargs: Mapping[str, object],
+        tokenization_kwargs: Optional[Mapping[str, object]] = None,
         return_mm_hashes: bool = False,
     ) -> MultiModalInputs:
         """
@@ -168,6 +172,7 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
             prompt,
             mm_items,
             hf_processor_mm_kwargs,
+            tokenization_kwargs,
             
             # Skip prompt caching calculation for now        
             return_mm_hashes=False,
@@ -284,7 +289,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             speaker_emb, clap_emb, cond_prompt_speech_tokens, cond_prompt_speech_emb, emotion_adv = batch[0]
             
             if cond_prompt_speech_tokens.shape != (0,) and cond_prompt_speech_emb.shape == (0,):
+                print("t3/cond_prompt_speech_tokens", cond_prompt_speech_tokens.shape, cond_prompt_speech_tokens.dtype)
                 cond_prompt_speech_emb = self.speech_emb(cond_prompt_speech_tokens)[0] + self.speech_pos_emb(cond_prompt_speech_tokens)
+                print("t3/cond_prompt_speech_emb", cond_prompt_speech_emb.shape, cond_prompt_speech_emb.dtype)
             
             t3_cond = T3Cond(
                 speaker_emb=speaker_emb,
@@ -293,6 +300,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
                 cond_prompt_speech_emb=cond_prompt_speech_emb,
                 emotion_adv=emotion_adv
             )
+            print("t3/t3_cond", t3_cond)
             result.append(self.cond_enc(t3_cond))
         return result
 
@@ -356,10 +364,15 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: object,
     ) -> torch.Tensor:
-        print("inputs_embeds", inputs_embeds)
-        print("intermediate_tensors", intermediate_tensors)
-        print("kwargs", kwargs)
+        print("t3/inputs_embeds", inputs_embeds.shape, inputs_embeds.dtype)
+        # print("t3/intermediate_tensors", intermediate_tensors)
+        # print("t3/input_ids", input_ids)
+        # print("t3/positions", positions)
+        # print("t3/kwargs", kwargs)
+        
         hidden_states = self.tfmr(input_ids, positions, intermediate_tensors, inputs_embeds=inputs_embeds)
+        print("t3/hidden_states", hidden_states.shape, hidden_states.dtype)
+        
         return hidden_states
 
     def get_language_model(self) -> torch.nn.Module:
