@@ -192,12 +192,14 @@ class ChatterboxTTS:
 
         with torch.inference_mode():
             speech_tokens = self.t3.generate(
-                [{
-                    "prompt": text,
-                    "multi_modal_data": {
-                        "conditionals": [self.conds.t3.to(device="cpu")],
+                [
+                    {
+                        "prompt": text,
+                        "multi_modal_data": {
+                            "conditionals": [self.conds.t3.to(device="cpu")],
+                        },
                     },
-                }],
+                ],
                 sampling_params=SamplingParams(
                     temperature=temperature,
                     

@@ -310,6 +310,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             # There's no multimodal embeddings, so we're decoding.
             return self.speech_emb(input_ids)
         else:
+            # print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype)
+            # print("t3/get_input_embeddings/multimodal_embeddings", multimodal_embeddings)
+
             # We're in the prefill stage, and need to wrangle the multimodal embeddings into the right format.
             # Embeddings are in the format of <| cond | text | speech |>
             
@@ -368,6 +371,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             inputs_embeds = inputs_embeds + self.precomputed_speech_pos_emb[position_offset]
     
         hidden_states = self.tfmr(input_ids, positions, intermediate_tensors, inputs_embeds=inputs_embeds)
+        # print("t3/hidden_states", hidden_states.shape, hidden_states.dtype)
 
         # if len(inputs_embeds) > 1:
         #     print("t3/compute_logits/hidden_states", hidden_states.shape, hidden_states.dtype, hidden_states)

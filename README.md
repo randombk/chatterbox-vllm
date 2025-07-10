@@ -3,6 +3,8 @@
 This is a port of https://github.com/resemble-ai/chatterbox to vLLM. Why?
 
 * Improved performance and more efficient use of GPU memory.
+  * Early benchmarks show ~4x speedup in generation toks/s without batching, and over 10x with batching. This is a significant improvement over the original Chatterbox implementation, which was bottlenecked by unnecessary CPU-GPU sync/transfers within the HF transformers implementation.
+  * More rigorous benchmarking is WIP, but will likely come after batching is fully fleshed out.
 * Easier integration with state-of-the-art inference infrastructure.
 
 DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or any other corporate entity in any way. The project is based solely on publicly-available information. All opinions are my own and do not necessarily represent the views of my employer.
@@ -50,5 +52,12 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 3. You should be able to run `python example-tts.py` to generate audio samples.
-4. That's as far as things have gotten thus far.
 
+# Chatterbox Architecture
+
+I could not find an official explanation of the Chatterbox architecture, so below is my best explanation based on the codebase. Chatterbox broadly follows the [CosyVoice](https://funaudiollm.github.io/cosyvoice2/) architecture, applying intermediate fusion multimodal conditioning to a 0.5B parameter Llama model.
+
+<div align="center">
+  <img src="https://github.com/randombk/chatterbox-vllm/raw/refs/heads/master/docs/chatterbox-architecture.svg" alt="Chatterbox Architecture" width="100%" />
+  <p><em>Chatterbox Architecture Diagram</em></p>
+</div>
