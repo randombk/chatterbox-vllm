@@ -7,20 +7,16 @@ from chatterbox_vllm.tts import ChatterboxTTS
 
 
 if __name__ == "__main__":
-    model = ChatterboxTTS.from_pretrained()
+    model = ChatterboxTTS.from_pretrained(
+        gpu_memory_utilization = 0.4,
+        max_model_len = 1000,
 
-    text = "Ezreal and Jinx teamed up with Ahri, Yasuo, and Teemo to take down the enemy's Nexus in an epic late-game pentakill."
-    AUDIO_PROMPT_PATH = "AUDIO_PROMPT.mp3"
+        # Disable CUDA graphs to reduce startup time for one-off generation.
+        enforce_eager = True,
+    )
+
+    text = "You are listening to a demo of the Chatterbox TTS model running on VLLM."
+    AUDIO_PROMPT_PATH = "docs/audio-sample-01.wav"
     
     wav = model.generate(text, audio_prompt_path=AUDIO_PROMPT_PATH)
     ta.save("test.wav", wav, model.sr)
-
-    # t3 = LLM(
-    #     model=f"./model-dev",
-    #     task="generate",
-    #     tokenizer="EnTokenizer",
-    #     tokenizer_mode="custom",
-    #     max_model_len=10000,
-    # )
-    # print("OK")
-    

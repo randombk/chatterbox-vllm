@@ -81,6 +81,13 @@ class Conditionals:
     t3: T3Cond
     gen: dict
 
+    def to(self, device):
+        self.t3 = self.t3.to(device=device)
+        for k, v in self.gen.items():
+            if torch.is_tensor(v):
+                self.gen[k] = v.to(device=device)
+        return self
+
     @classmethod
     def load(cls, fpath):
         kwargs = torch.load(fpath, weights_only=True)
@@ -100,7 +107,7 @@ class ChatterboxTTS:
         self.hp = T3Config()
 
     @classmethod
-    def from_local(cls, ckpt_dir: str) -> 'ChatterboxTTS':
+    def from_local(cls, ckpt_dir: str, **kwargs) -> 'ChatterboxTTS':
         ckpt_dir = Path(ckpt_dir)
 
         ve = VoiceEncoder()
@@ -109,30 +116,27 @@ class ChatterboxTTS:
 
         s3gen = S3Gen()
         s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
-        s3gen.eval()
+        s3gen.to(device="cuda").eval()
 
         conds = Conditionals.load(ckpt_dir / "conds.pt")
+        conds.to(device="cuda")
 
         t3 = LLM(
             model=f"./t3-model",
             task="generate",
             tokenizer="EnTokenizer",
             tokenizer_mode="custom",
-            max_model_len=1000,
-            gpu_memory_utilization=0.5,
-            # limit_mm_per_prompt={
-            #     'conditionals': 1
-            # }
+            **kwargs,
         )
 
         return cls(t3, s3gen, ve, conds=conds)
 
     @classmethod
-    def from_pretrained(cls) -> 'ChatterboxTTS':
+    def from_pretrained(cls, *args, **kwargs) -> 'ChatterboxTTS':
         for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
             local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath, revision="1b475dffa71fb191cb6d5901215eb6f55635a9b6")
 
-        return cls.from_local(Path(local_path).parent)
+        return cls.from_local(Path(local_path).parent, *args, **kwargs)
 
     def prepare_audio_conditionals(self, wav_fpath: str, exaggeration: float = 0.5):
         ## Load reference wav
@@ -191,15 +195,18 @@ class ChatterboxTTS:
                 [{
                     "prompt": text,
                     "multi_modal_data": {
-                        "conditionals": [self.conds.t3],
+                        "conditionals": [self.conds.t3.to(device="cpu")],
                     },
                 }],
                 sampling_params=SamplingParams(
                     temperature=temperature,
-                    # cfg_weight=cfg_weight,
+                    
                     stop_token_ids=[self.hp.stop_speech_token],
-                    top_k=1,
-                    max_tokens=200,
+                    max_tokens=1000,
+
+                    # From original Chatterbox HF generation args
+                    top_p=0.8,
+                    repetition_penalty=2.0,
                 )
             )
 
@@ -215,11 +222,11 @@ class ChatterboxTTS:
             
             speech_tokens = speech_tokens[speech_tokens < 6561]
 
-            speech_tokens = speech_tokens.to('cpu')
+            # speech_tokens = speech_tokens.to('cpu')
 
             wav, _ = self.s3gen.inference(
-                speech_tokens=speech_tokens,
-                ref_dict=self.conds.gen,
+                speech_tokens=speech_tokens.to(device="cuda"),
+                ref_dict=self.conds.to(device="cuda").gen,
             )
             return wav.cpu()
         
