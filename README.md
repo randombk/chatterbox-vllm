@@ -8,17 +8,20 @@ This is a port of https://github.com/resemble-ai/chatterbox to vLLM. Why?
 DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or any other corporate entity in any way. The project is based solely on publicly-available information. All opinions are my own and do not necessarily represent the views of my employer.
 
 ## Generation Samples
+
+![Sample 1](docs/audio-sample-01.wav)
 <audio controls>
   <source src="docs/audio-sample-01.wav" type="audio/wav">
-  Your browser does not support the audio element.
 </audio>
+
+![Sample 2](docs/audio-sample-02.wav)
 <audio controls>
   <source src="docs/audio-sample-02.wav" type="audio/wav">
-  Your browser does not support the audio element.
 </audio>
+
+![Sample 3](docs/audio-sample-03.wav)
 <audio controls>
   <source src="docs/audio-sample-03.wav" type="audio/wav">
-  Your browser does not support the audio element.
 </audio>
 
 
