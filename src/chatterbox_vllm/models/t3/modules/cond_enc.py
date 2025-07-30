@@ -125,8 +125,6 @@ class T3CondEnc(nn.Module):
         if self.hp.emotion_adv:
             assert cond.emotion_adv.shape != (0,)
             cond_emotion_adv = self.emotion_adv_fc(cond.emotion_adv)
-            # HACK: zero out the emotion adv
-            cond_emotion_adv = cond_emotion_adv.zero_()
 
         # print("T3CondEnc/cond_spkr", cond_spkr.shape, cond_spkr.dtype)
         # print("T3CondEnc/cond_clap", cond_clap.shape, cond_clap.dtype)

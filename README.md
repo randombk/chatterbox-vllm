@@ -32,11 +32,11 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 * ✅ Basic speech cloning with audio and text conditioning.
 * ✅ Outputs match the quality of the original Chatterbox implementation.
 * ✅ CFG=0.5 is implemented.
+* ✅ Exaggeration control is implemented.
 * ℹ️ Project uses vLLM internal APIs and hacks to get things done. Refactoring to idomatic vLLM way of doing things is WIP, but may require some changes to vLLM.
 * ℹ️ Substantial refactoring is needed to further clean up unnecessary workarounds and code paths.
 * ℹ️ Server API is not implemented and will likely be out-of-scope for this project.
 * ❌ CFG scale is hard-coded at 0.5 and is not yet implemented.
-* ❌ Exaggeration is not yet implemented.
 * ❌ APIs are not yet stable and may change.
 * ❌ vLLM batching is not (yet) supported.
 * ❌ Benchmarks and performance optimizations are not yet implemented.
