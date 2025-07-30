@@ -31,14 +31,16 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 
 * ✅ Basic speech cloning with audio and text conditioning.
 * ✅ Outputs match the quality of the original Chatterbox implementation.
+* ✅ CFG=0.5 is implemented.
 * ℹ️ Project uses vLLM internal APIs and hacks to get things done. Refactoring to idomatic vLLM way of doing things is WIP, but may require some changes to vLLM.
 * ℹ️ Substantial refactoring is needed to further clean up unnecessary workarounds and code paths.
+* ℹ️ Server API is not implemented and will likely be out-of-scope for this project.
+* ❌ CFG scale is hard-coded at 0.5 and is not yet implemented.
+* ❌ Exaggeration is not yet implemented.
 * ❌ APIs are not yet stable and may change.
-* ❌ CFG and exaggeration are not yet implemented.
 * ❌ vLLM batching is not (yet) supported.
 * ❌ Benchmarks and performance optimizations are not yet implemented.
 * ❌ Installation process can be tricky and has room for improvement.
-* ❌ Server API is not implemented. This will likely be out-of-scope for this project.
 
 
 # Installation
@@ -60,4 +62,16 @@ I could not find an official explanation of the Chatterbox architecture, so belo
 <div align="center">
   <img src="https://github.com/randombk/chatterbox-vllm/raw/refs/heads/master/docs/chatterbox-architecture.svg" alt="Chatterbox Architecture" width="100%" />
   <p><em>Chatterbox Architecture Diagram</em></p>
+</div>
+
+# Implementation Notes
+
+## CFG Implementation Details
+
+VLLM does not support CFG natively, so substantial hacks were needs to make it work. At a high level, we trick VLLM into thinking the model has double the hidden dimension size as it actually does, then splitting and restacking the states to invoke Llama with double the original batch size. This does pose a risk that VLLM will underestimate the memory requirements of the model - more research is needed into whether VLLM's initial profiling pass will capture this nuance.
+
+
+<div align="center">
+  <img src="https://github.com/randombk/chatterbox-vllm/raw/refs/heads/master/docs/vllm-cfg-impl.svg" alt="VLLM CFG Implementation" width="100%" />
+  <p><em>VLLM CFG Implementation</em></p>
 </div>

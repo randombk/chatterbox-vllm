@@ -211,6 +211,10 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str):
         super().__init__()
+        # HACK: We changed the hidden size to 2049 to trick VLLM into thinking that the model has a hidden size of 2049.
+        #       This is needed to accomodate the extra data for the CFG + positional encoding offset.
+        #       We need to change it back to 1024 for loading the actual llama model.
+        vllm_config.model_config.hf_config.hidden_size = 1024
         self.vllm_config = vllm_config
         self.cfg: ModelConfig = vllm_config.model_config
 
@@ -306,13 +310,18 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         input_ids: torch.Tensor,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
+        # print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype)
+        # print("t3/get_input_embeddings/multimodal_embeddings", multimodal_embeddings)
+
         if multimodal_embeddings is None or len(multimodal_embeddings) == 0:
             # There's no multimodal embeddings, so we're decoding.
-            return self.speech_emb(input_ids)
-        else:
-            # print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype)
-            # print("t3/get_input_embeddings/multimodal_embeddings", multimodal_embeddings)
+            embeds = self.speech_emb(input_ids)
+            # print("t3/get_input_embeddings/embeds(nomulti)", embeds.shape, embeds.dtype)
 
+            out = torch.cat([embeds, embeds, (torch.ones(len(embeds), 1) * 34).to(embeds.device)], dim=1)
+            # print("t3/get_input_embeddings/out(nomulti)", out.shape, out.dtype)
+            return out
+        else:
             # We're in the prefill stage, and need to wrangle the multimodal embeddings into the right format.
             # Embeddings are in the format of <| cond | text | speech |>
             
@@ -326,9 +335,6 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             # This will likely break batching, but will likely need a VLLM change to fix.
             self._text_tokens_len = len(text_ids)
 
-            # text_emb[1].zero_()  # CFG uncond
-            # print("text_emb", text_emb)
-
             start_of_speech_token = torch.tensor([self.t3conf.start_speech_token]).to(input_ids.device)
             start_of_speech_emb = self.speech_emb(start_of_speech_token.unsqueeze(0))[0]
 
@@ -337,47 +343,81 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
                 start_of_speech_emb = start_of_speech_emb + self.precomputed_speech_pos_emb[0]
 
             embeds = torch.cat([conds, text_emb, start_of_speech_emb], dim=0)
+            # print("t3/get_input_embeddings/embeds(multi)", embeds.shape, embeds.dtype)
+            
+            # Zero out text embeds for CFG
+            cfg_embeds = torch.cat([conds, torch.zeros_like(text_emb), start_of_speech_emb], dim=0)
 
-            # for i in range(len(embeds)):
-            #     print("embeds", i, embeds[i])
-            return embeds
+            # Encode the text tokens length as an extra dimension
+            # -1 is needed because we've already included the first speech token in the embeds tensor
+            embed_len_vec = (torch.ones(len(embeds), 1) * (len(cfg_embeds) - 1)).to(input_ids.device)
+
+            # Concatenate into one giant tensor, which will be split in the forward pass
+            out = torch.cat([embeds, cfg_embeds, embed_len_vec], dim=1)
+            # print("t3/get_input_embeddings/out(multi)", out.shape, out.dtype)
+            return out
 
 
     def compute_logits(self, hidden_states: torch.Tensor, sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        logits = self.logits_processor(self.speech_head, hidden_states, sampling_metadata)
-        # print("t3/compute_logits/logit with the highest probability:", logits.argmax())
+        # print("t3/compute_logits/hidden_states", hidden_states.shape, hidden_states.dtype)
+        # print("t3/compute_logits/sampling_metadata", sampling_metadata)
+
+        # Split the hidden state vector into the three parts
+        cond_hidden_states, uncond_hidden_states, embed_len_vec = hidden_states.split([self.dim, self.dim, 1], dim=1)
+        # print("t3/compute_logits/normal_hidden_states", normal_hidden_states.shape, normal_hidden_states.dtype)
+        # print("t3/compute_logits/cfg_hidden_states", cfg_hidden_states.shape, cfg_hidden_states.dtype)
+        # print("t3/compute_logits/embed_len_vec", embed_len_vec.shape, embed_len_vec.dtype)
+
+        cond_logits = self.logits_processor(self.speech_head, cond_hidden_states, sampling_metadata)
+        uncond_logits = self.logits_processor(self.speech_head, uncond_hidden_states, sampling_metadata)
+
+        logits = cond_logits + 0.5 * (cond_logits - uncond_logits)
+        # print("t3/compute_logits/logit with the highest probability (cond, uncond, post-cfg):", cond_logits.argmax(), uncond_logits.argmax(), logits.argmax())
         return logits
 
 
     def forward(
         self,
-        input_ids: Optional[torch.Tensor],
-        positions: torch.Tensor,
-        intermediate_tensors: Optional[IntermediateTensors],
-        inputs_embeds: Optional[torch.Tensor] = None,
+        input_ids: Optional[torch.Tensor],  # Almost always None
+        positions: torch.Tensor,  # Position IDs since start of the context (i.e. since the first conditional token)
+        intermediate_tensors: Optional[IntermediateTensors],  # Almost always None
+        inputs_embeds: Optional[torch.Tensor] = None,  # The actual inputs to the model
         **kwargs: object,
     ) -> torch.Tensor:
         # print("t3/inputs_embeds", inputs_embeds.shape, inputs_embeds.dtype)
-        # print("t3/positions", positions)
+        # print("t3/positions", positions.shape, positions.dtype)
 
         # These are usually NULL:
         # print("t3/intermediate_tensors", intermediate_tensors)
         # print("t3/input_ids", input_ids)
         # print("t3/kwargs", kwargs)
 
+        # Split the inputs_embeds into the three parts
+        embeds, cfg_embeds, embed_len_vec = inputs_embeds.split([self.dim, self.dim, 1], dim=1)
+        # print("t3/embeds", embeds.shape, embeds.dtype)
+        # print("t3/cfg_embeds", cfg_embeds.shape, cfg_embeds.dtype)
+        # print("t3/embed_len_vec", embed_len_vec.shape, embed_len_vec.dtype)
+
+        # WIP: Apply speech positional embeddings by computing the offset from the start of the context
+        # position_offset = positions - embed_len_vec
+        # speech_pos_emb = torch.stack([self.precomputed_speech_pos_emb[int(idx.item())] for idx in position_offset.flatten()])
+        # embeds = embeds + speech_pos_emb
+        # cfg_embeds = cfg_embeds + speech_pos_emb
+
         # HACK: We are going to apply speech positional embeddings here
-        if len(inputs_embeds) == 1:
+        if len(embeds) == 1:
             position_offset = positions - (self._text_tokens_len + 34) # 0 is already accounted for via the start of speech token
-            inputs_embeds = inputs_embeds + self.precomputed_speech_pos_emb[position_offset]
+            embeds = embeds + self.precomputed_speech_pos_emb[position_offset]
+            cfg_embeds = cfg_embeds + self.precomputed_speech_pos_emb[position_offset]
     
-        hidden_states = self.tfmr(input_ids, positions, intermediate_tensors, inputs_embeds=inputs_embeds)
+        hidden_states = self.tfmr(
+            input_ids=None,
+            positions=torch.cat([positions, positions], dim=0),
+            intermediate_tensors=None,
+            inputs_embeds=torch.cat([embeds, cfg_embeds], dim=0)
+        )
         # print("t3/hidden_states", hidden_states.shape, hidden_states.dtype)
-
-        # if len(inputs_embeds) > 1:
-        #     print("t3/compute_logits/hidden_states", hidden_states.shape, hidden_states.dtype, hidden_states)
-
-        return hidden_states
-
-    def get_language_model(self) -> torch.nn.Module:
-        return self.tfmr
-
+    
+        # Reconcatenate the hidden states into the master tensor
+        hidden_state_1, hidden_state_2 = hidden_states.split([len(embeds), len(cfg_embeds)], dim=0)
+        return torch.cat([hidden_state_1, hidden_state_2, embed_len_vec], dim=1)
