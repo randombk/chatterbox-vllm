@@ -1,4 +1,5 @@
 from typing import Iterable, Mapping, Optional, Sequence, Union
+import os
 
 import torch
 import torch.nn as nn
@@ -255,6 +256,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         )
         self.logits_processor = LogitsProcessor(self.t3conf.speech_tokens_dict_size)
 
+        self.cfg_scale = float(os.environ.get("CHATTERBOX_CFG_SCALE", "0.5"))
+        print("Applying CFG scale:", self.cfg_scale)
+
         # HACK: We need some way to track the number of text tokens in the prefill stage.
         # self._text_tokens_len = 0
 
@@ -434,20 +438,20 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # HACK: We're going to extract the CFG scale from the sampling metadata
         # Recall that we squirreled away the CFG scale in the frequency_penalty field.
         # BUG: This is not working - https://github.com/vllm-project/vllm/issues/15115
-        if sampling_metadata is None:
-            cfg_scale = 0.5
-        else:
-            cfg_scale = sampling_metadata.frequency_penalty
-            sampling_metadata.frequency_penalty = 0.0
-            print("t3/compute_logits/cfg_scale", cfg_scale)
+        # if sampling_metadata is None:
+        #     cfg_scale = 0.5
+        # else:
+        #     cfg_scale = sampling_metadata.frequency_penalty
+        #     sampling_metadata.frequency_penalty = 0.0
+        #     print("t3/compute_logits/cfg_scale", cfg_scale)
 
         cond_logits = self.logits_processor(self.speech_head, cond_hidden_states, sampling_metadata)
         uncond_logits = self.logits_processor(self.speech_head, uncond_hidden_states, sampling_metadata)
 
-        logits = cond_logits + cfg_scale * (cond_logits - uncond_logits)
+        logits = cond_logits + self.cfg_scale * (cond_logits - uncond_logits)
 
-        if sampling_metadata is not None:
-            sampling_metadata.frequency_penalty = cfg_scale
+        # if sampling_metadata is not None:
+        #     sampling_metadata.frequency_penalty = cfg_scale
 
         # print("t3/compute_logits/logit with the highest probability (cond, uncond, post-cfg):", cond_logits.argmax(), uncond_logits.argmax(), logits.argmax())
         return logits

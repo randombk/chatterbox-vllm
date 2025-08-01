@@ -179,7 +179,7 @@ class ChatterboxTTS:
         prompts: list[str],
         audio_prompt_path: Optional[str] = None,
         exaggeration: float = 0.5,
-        cfg_weight: float = 0.5,
+        # cfg_weight: float = 0.5,
         temperature: float = 0.8,
     ) -> list[any]:
         conds = self.get_audio_conditionals(audio_prompt_path)
@@ -219,7 +219,7 @@ class ChatterboxTTS:
                     # HACK: I don't see a way to pass custom sampling params to vLLM.
                     # We'll squirrel away CFG Scale in the 'frequency_penalty' field, and extract/reset/set it
                     # when processing the logits.
-                    frequency_penalty=cfg_weight,
+                    # frequency_penalty=cfg_weight,
                 )
             )
 
