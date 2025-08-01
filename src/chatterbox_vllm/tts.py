@@ -137,6 +137,12 @@ class ChatterboxTTS:
         for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
             local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath, revision="1b475dffa71fb191cb6d5901215eb6f55635a9b6")
 
+        # Ensure the symlink in './t3-model/model.safetensors' points to t3_cfg_path
+        t3_cfg_path = Path(local_path).parent / "t3_cfg.safetensors"
+        model_safetensors_path = Path.cwd() / "t3-model" / "model.safetensors"
+        model_safetensors_path.unlink(missing_ok=True)
+        model_safetensors_path.symlink_to(t3_cfg_path)
+
         return cls.from_local(Path(local_path).parent, *args, **kwargs)
 
     @lru_cache(maxsize=10)

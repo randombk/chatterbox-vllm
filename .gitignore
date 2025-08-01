@@ -35,3 +35,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Automatically regenerated
+t3-model/model.safetensors

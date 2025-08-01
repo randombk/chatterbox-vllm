@@ -40,20 +40,17 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 * ❌ CFG scale is hard-coded at 0.5 and is not yet tweakable.
 * ❌ APIs are not yet stable and may change.
 * ❌ Benchmarks and performance optimizations are not yet implemented.
-* ❌ Installation process can be tricky and has room for improvement.
 
 
 # Installation
-
-1. The chatterbox model weights should exist in your HF cache. Fix the symlink inside `./t3-model` if needed. This is a temporary setup to unblock development, and will be replaced with a better setup once a MVP is up and running.
-1. Set up the environment via:
 
 ```
 uv venv
 source .venv/bin/activate
 uv pip install -e .
 ```
-3. You should be able to run `python example-tts.py` to generate audio samples.
+
+The package should automatically download the correct model weights from the Hugging Face Hub. You should then be able to run `python example-tts.py` to generate audio samples.
 
 # Chatterbox Architecture
 
