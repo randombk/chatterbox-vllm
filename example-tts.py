@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from typing import List
-import os
 import torchaudio as ta
 from chatterbox_vllm.tts import ChatterboxTTS
 
@@ -15,8 +14,13 @@ if __name__ == "__main__":
         enforce_eager = True,
     )
 
-    text = "You are listening to a demo of the Chatterbox TTS model running on VLLM."
-    AUDIO_PROMPT_PATH = "docs/audio-sample-01.wav"
+    prompts = [
+        "You are listening to a demo of the Chatterbox TTS model running on VLLM.",
+        "This is a separate prompt to test the batching implementation.",
+        "And here is a third prompt. It's a bit longer than the first one, but not by much.",
+    ]
+    AUDIO_PROMPT_PATH = "docs/audio-sample-02.mp3"
     
-    wav = model.generate(text, audio_prompt_path=AUDIO_PROMPT_PATH)
-    ta.save("test.wav", wav, model.sr)
+    audios = model.generate(prompts, audio_prompt_path=AUDIO_PROMPT_PATH, exaggeration=0.8)
+    for i, audio in enumerate(audios):
+        ta.save(f"test-{i}.mp3", audio, model.sr)

@@ -11,19 +11,19 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 
 ## Generation Samples
 
-![Sample 1](docs/audio-sample-01.wav)
+![Sample 1](docs/audio-sample-01.mp3)
 <audio controls>
-  <source src="docs/audio-sample-01.wav" type="audio/wav">
+  <source src="docs/audio-sample-01.mp3" type="audio/mp3">
 </audio>
 
-![Sample 2](docs/audio-sample-02.wav)
+![Sample 2](docs/audio-sample-02.mp3)
 <audio controls>
-  <source src="docs/audio-sample-02.wav" type="audio/wav">
+  <source src="docs/audio-sample-02.mp3" type="audio/mp3">
 </audio>
 
-![Sample 3](docs/audio-sample-03.wav)
+![Sample 3](docs/audio-sample-03.mp3)
 <audio controls>
-  <source src="docs/audio-sample-03.wav" type="audio/wav">
+  <source src="docs/audio-sample-03.mp3" type="audio/mp3">
 </audio>
 
 
@@ -33,12 +33,12 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 * ✅ Outputs match the quality of the original Chatterbox implementation.
 * ✅ CFG=0.5 is implemented.
 * ✅ Exaggeration control is implemented.
+* ✅ vLLM batching is implemented and produces a significant speedup.
 * ℹ️ Project uses vLLM internal APIs and hacks to get things done. Refactoring to idomatic vLLM way of doing things is WIP, but may require some changes to vLLM.
 * ℹ️ Substantial refactoring is needed to further clean up unnecessary workarounds and code paths.
 * ℹ️ Server API is not implemented and will likely be out-of-scope for this project.
-* ❌ CFG scale is hard-coded at 0.5 and is not yet implemented.
+* ❌ CFG scale is hard-coded at 0.5 and is not yet tweakable.
 * ❌ APIs are not yet stable and may change.
-* ❌ vLLM batching is not (yet) supported.
 * ❌ Benchmarks and performance optimizations are not yet implemented.
 * ❌ Installation process can be tricky and has room for improvement.
 

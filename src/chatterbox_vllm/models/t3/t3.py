@@ -183,10 +183,19 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
         n_cond_tokens = 34 # 1 for speaker_emb, 0 for clap_emb, 32 for cond_prompt_speech_emb, 1 for emotion_adv
         prompt = "[START]" * n_cond_tokens + prompt + "[STOP]"
         prompt_ids = (
-            [prompt_ids[0]] * n_cond_tokens # Conditionals
+            # For prompt IDs, we're going to insert a special start token that will be replaced with the actual conditioning embeddings.
+            # This is a hack to help us unbatch batched inputs. The exact number doesn't matter so long as it won't naturally appear in
+            # the input.
+            [695] # [PLACEHOLDER55]
+            +[prompt_ids[0]] * (n_cond_tokens-1) # Conditionals
             + prompt_ids # Text prompt
             + [0] # Start of speech token
         )
+        # print("t3/apply/prompt_ids", prompt_ids)
+        # print("t3/apply/prompt", prompt)
+        # print("t3/apply/mm_kwargs", mm_kwargs)
+        # print("t3/apply/mm_hashes", mm_hashes)
+        # print("t3/apply/is_update_applied", is_update_applied)
 
         return MultiModalInputs(
             type="multimodal",
@@ -247,7 +256,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         self.logits_processor = LogitsProcessor(self.t3conf.speech_tokens_dict_size)
 
         # HACK: We need some way to track the number of text tokens in the prefill stage.
-        self._text_tokens_len = 0
+        # self._text_tokens_len = 0
 
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -305,13 +314,55 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         return result
 
 
+    def split_prefill_decode(
+        self,
+        input_ids: torch.Tensor,
+        multimodal_embeddings: list[MultiModalEmbeddings],
+    ) -> list[torch.Tensor, Optional[MultiModalEmbeddings]]:
+        output = []
+
+        # Keep a buffer of current tokens
+        buffer = []
+        prev_id = None
+
+        # Keep index of current multimodal embedding
+        mm_idx = 0
+        
+        # Iterate through the element and if we hit block header, set the block state to true
+        # Else if we hit the block footer, set block state to false
+        # Every time we swtich between block states, add the current buffer to the output if not empty
+        # If we we switch out of block mode, add the multimodal embedding
+        for input_id in input_ids:
+            # Check Block header
+            if input_id == 695:
+                if buffer:
+                    output.append((torch.tensor(buffer).to(input_ids.device), None))
+                buffer = []
+
+            # Add value to buffer
+            buffer.append(input_id)
+
+            # Check Block footer
+            if prev_id == 0 and input_id == 0:
+                output.append((torch.tensor(buffer).to(input_ids.device), multimodal_embeddings[mm_idx]))
+                mm_idx += 1
+                buffer = []
+
+            # Set previous number
+            prev_id = input_id
+
+        # Add any elements left in the buffer
+        if buffer:
+            output.append((torch.tensor(buffer).to(input_ids.device), None))
+
+        return output
+
+
     def get_input_embeddings(
         self,
         input_ids: torch.Tensor,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
-        # print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype)
-        # print("t3/get_input_embeddings/multimodal_embeddings", multimodal_embeddings)
 
         if multimodal_embeddings is None or len(multimodal_embeddings) == 0:
             # There's no multimodal embeddings, so we're decoding.
@@ -322,40 +373,57 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             # print("t3/get_input_embeddings/out(nomulti)", out.shape, out.dtype)
             return out
         else:
-            # We're in the prefill stage, and need to wrangle the multimodal embeddings into the right format.
-            # Embeddings are in the format of <| cond | text | speech |>
+            # print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype, input_ids)
+            # print("t3/get_input_embeddings/multimodal_embeddings", [i.shape for i in (multimodal_embeddings or [])])
+
+            # Split out prefill and decode using the heuristic and the placeholder token
+            out = []
+            for ids, multimodal_embedding in self.split_prefill_decode(input_ids, multimodal_embeddings):
+                # print("t3/get_input_embeddings/ids", ids.shape, ids.dtype, ids)
+                # print("t3/get_input_embeddings/multimodal_embedding", multimodal_embedding.shape if multimodal_embedding is not None else None)
+                
+                if multimodal_embedding is None:
+                    # There's no multimodal embeddings, so we're decoding.
+                    embeds = self.speech_emb(ids)
+                    out.append(torch.cat([embeds, embeds, (torch.ones(len(embeds), 1) * 34).to(embeds.device)], dim=1))
+                    continue
+                
+                # We're in the prefill stage, and need to wrangle the multimodal embeddings into the right format.
+                # Embeddings are in the format of <| cond | text | speech |>
+                
+                # The first 34 tokens are the cond portion. The remainder, except for the last token are the text
+                # portion. The last token is a placeholder for the start of speech token.
+                text_ids = ids[34:-1]
+                text_emb = self.text_emb(text_ids)
+
+                # HACK: Remember the number of text tokens so we can apply speech positional embeddings later
+                # This will likely break batching, but will likely need a VLLM change to fix.
+                # self._text_tokens_len = len(text_ids)
+
+                start_of_speech_token = torch.tensor([self.t3conf.start_speech_token]).to(ids.device)
+                start_of_speech_emb = self.speech_emb(start_of_speech_token.unsqueeze(0))[0]
+
+                if self.t3conf.input_pos_emb == "learned":
+                    text_emb = text_emb + self.text_pos_emb(text_ids.unsqueeze(0))
+                    start_of_speech_emb = start_of_speech_emb + self.precomputed_speech_pos_emb[0]
+
+                embeds = torch.cat([multimodal_embedding, text_emb, start_of_speech_emb], dim=0)
+                # print("t3/get_input_embeddings/embeds(multi)", embeds.shape, embeds.dtype)
+                
+                # Zero out text embeds for CFG
+                cfg_embeds = torch.cat([multimodal_embedding, torch.zeros_like(text_emb), start_of_speech_emb], dim=0)
+
+                # Encode the text tokens length as an extra dimension
+                # -1 is needed because we've already included the first speech token in the embeds tensor
+                embed_len_vec = (torch.ones(len(embeds), 1) * (len(cfg_embeds) - 1)).to(ids.device)
+
+                # Concatenate into one giant tensor, which will be split in the forward pass
+                # print("t3/get_input_embeddings/out(multi)", out.shape, out.dtype)
+                out.append(torch.cat([embeds, cfg_embeds, embed_len_vec], dim=1))
             
-            # The first 34 tokens are the cond portion. The remainder, except for the last token are the text
-            # portion. The last token is a placeholder for the start of speech token.
-            conds = multimodal_embeddings[0]
-            text_ids = input_ids[34:-1]
-            text_emb = self.text_emb(text_ids)
-
-            # HACK: Remember the number of text tokens so we can apply speech positional embeddings later
-            # This will likely break batching, but will likely need a VLLM change to fix.
-            self._text_tokens_len = len(text_ids)
-
-            start_of_speech_token = torch.tensor([self.t3conf.start_speech_token]).to(input_ids.device)
-            start_of_speech_emb = self.speech_emb(start_of_speech_token.unsqueeze(0))[0]
-
-            if self.t3conf.input_pos_emb == "learned":
-                text_emb = text_emb + self.text_pos_emb(text_ids.unsqueeze(0))
-                start_of_speech_emb = start_of_speech_emb + self.precomputed_speech_pos_emb[0]
-
-            embeds = torch.cat([conds, text_emb, start_of_speech_emb], dim=0)
-            # print("t3/get_input_embeddings/embeds(multi)", embeds.shape, embeds.dtype)
-            
-            # Zero out text embeds for CFG
-            cfg_embeds = torch.cat([conds, torch.zeros_like(text_emb), start_of_speech_emb], dim=0)
-
-            # Encode the text tokens length as an extra dimension
-            # -1 is needed because we've already included the first speech token in the embeds tensor
-            embed_len_vec = (torch.ones(len(embeds), 1) * (len(cfg_embeds) - 1)).to(input_ids.device)
-
-            # Concatenate into one giant tensor, which will be split in the forward pass
-            out = torch.cat([embeds, cfg_embeds, embed_len_vec], dim=1)
-            # print("t3/get_input_embeddings/out(multi)", out.shape, out.dtype)
-            return out
+            output = torch.cat(out, dim=0)
+            # print("t3/get_input_embeddings/output", output.shape, output.dtype)
+            return output
 
 
     def compute_logits(self, hidden_states: torch.Tensor, sampling_metadata: SamplingMetadata) -> torch.Tensor:
@@ -405,10 +473,10 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # cfg_embeds = cfg_embeds + speech_pos_emb
 
         # HACK: We are going to apply speech positional embeddings here
-        if len(embeds) == 1:
-            position_offset = positions - (self._text_tokens_len + 34) # 0 is already accounted for via the start of speech token
-            embeds = embeds + self.precomputed_speech_pos_emb[position_offset]
-            cfg_embeds = cfg_embeds + self.precomputed_speech_pos_emb[position_offset]
+        # if len(embeds) == 1:
+        #     position_offset = positions - (self._text_tokens_len + 34) # 0 is already accounted for via the start of speech token
+        #     embeds = embeds + self.precomputed_speech_pos_emb[position_offset]
+        #     cfg_embeds = cfg_embeds + self.precomputed_speech_pos_emb[position_offset]
     
         hidden_states = self.tfmr(
             input_ids=None,
@@ -421,3 +489,6 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # Reconcatenate the hidden states into the master tensor
         hidden_state_1, hidden_state_2 = hidden_states.split([len(embeds), len(cfg_embeds)], dim=0)
         return torch.cat([hidden_state_1, hidden_state_2, embed_len_vec], dim=1)
+
+    def get_language_model(self) -> torch.nn.Module:
+        return self.tfmr

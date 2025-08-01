@@ -165,12 +165,12 @@ class ChatterboxTTS:
 
     def generate(
         self,
-        text: str,
+        prompts: list[str],
         audio_prompt_path: Optional[str] = None,
         exaggeration: float = 0.5,
         cfg_weight: float = 0.5,
         temperature: float = 0.8,
-    ):
+    ) -> list[any]:
         if audio_prompt_path:
             self.prepare_audio_conditionals(audio_prompt_path, exaggeration=exaggeration)
         else:
@@ -185,20 +185,17 @@ class ChatterboxTTS:
                 emotion_adv=exaggeration * torch.ones(1, 1),
             )
 
-        # cond_emb = self.prepare_conditioning(self.conds.t3)  # (B, len_cond, dim)
-
         # Norm and tokenize text
-        text = "[START]" + punc_norm(text) + "[STOP]"
-
         with torch.inference_mode():
-            speech_tokens = self.t3.generate(
+            batch_results = self.t3.generate(
                 [
                     {
-                        "prompt": text,
+                        "prompt": "[START]" + punc_norm(text) + "[STOP]",
                         "multi_modal_data": {
                             "conditionals": [self.conds.t3.to(device="cpu")],
                         },
-                    },
+                    }
+                    for text in prompts
                 ],
                 sampling_params=SamplingParams(
                     temperature=temperature,
@@ -212,23 +209,19 @@ class ChatterboxTTS:
                 )
             )
 
-            # Extract only the conditional batch.
-            speech_tokens = speech_tokens[0].outputs[0].token_ids
-            # print(speech_tokens)
+            results = []
+            for i in range(len(batch_results)):
+                for j in range(len(batch_results[i].outputs)):
+                    speech_tokens = batch_results[i].outputs[j].token_ids
+                    speech_tokens = torch.tensor(speech_tokens)
+                    speech_tokens = drop_invalid_tokens(speech_tokens)
+                    speech_tokens = speech_tokens[speech_tokens < 6561]
 
-            # Convert to tensor
-            speech_tokens = torch.tensor(speech_tokens)
+                    wav, _ = self.s3gen.inference(
+                        speech_tokens=speech_tokens.to(device="cuda"),
+                        ref_dict=self.conds.to(device="cuda").gen,
+                    )
+                    results.append(wav.cpu())
 
-            # TODO: output becomes 1D
-            speech_tokens = drop_invalid_tokens(speech_tokens)
-            
-            speech_tokens = speech_tokens[speech_tokens < 6561]
-
-            # speech_tokens = speech_tokens.to('cpu')
-
-            wav, _ = self.s3gen.inference(
-                speech_tokens=speech_tokens.to(device="cuda"),
-                ref_dict=self.conds.to(device="cuda").gen,
-            )
-            return wav.cpu()
+            return results
         
