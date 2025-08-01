@@ -206,6 +206,11 @@ class ChatterboxTTS:
                     # From original Chatterbox HF generation args
                     top_p=0.8,
                     repetition_penalty=2.0,
+
+                    # HACK: I don't see a way to pass custom sampling params to vLLM.
+                    # We'll squirrel away CFG Scale in the 'frequency_penalty' field, and extract/reset/set it
+                    # when processing the logits.
+                    frequency_penalty=cfg_weight,
                 )
             )
 

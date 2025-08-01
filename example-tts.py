@@ -19,8 +19,8 @@ if __name__ == "__main__":
         "This is a separate prompt to test the batching implementation.",
         "And here is a third prompt. It's a bit longer than the first one, but not by much.",
     ]
-    AUDIO_PROMPT_PATH = "docs/audio-sample-02.mp3"
+    AUDIO_PROMPT_PATH = "docs/audio-sample-01.mp3"
     
-    audios = model.generate(prompts, audio_prompt_path=AUDIO_PROMPT_PATH, exaggeration=0.8)
+    audios = model.generate(prompts, audio_prompt_path=AUDIO_PROMPT_PATH, exaggeration=0.8, cfg_weight=0.5)
     for i, audio in enumerate(audios):
         ta.save(f"test-{i}.mp3", audio, model.sr)
