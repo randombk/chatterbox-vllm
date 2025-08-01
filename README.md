@@ -47,10 +47,12 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 ```
 uv venv
 source .venv/bin/activate
-uv pip install -e .
+uv sync
 ```
 
 The package should automatically download the correct model weights from the Hugging Face Hub. You should then be able to run `python example-tts.py` to generate audio samples.
+
+If you encounter CUDA issues, try resetting the venv and using `uv pip install -e .` instead of `uv sync`.
 
 # Chatterbox Architecture
 
