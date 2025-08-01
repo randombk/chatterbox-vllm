@@ -14,13 +14,13 @@ if __name__ == "__main__":
         enforce_eager = True,
     )
 
-    prompts = [
-        "You are listening to a demo of the Chatterbox TTS model running on VLLM.",
-        "This is a separate prompt to test the batching implementation.",
-        "And here is a third prompt. It's a bit longer than the first one, but not by much.",
-    ]
-    AUDIO_PROMPT_PATH = "docs/audio-sample-01.mp3"
+    for i, audio_prompt_path in enumerate([None, "docs/audio-sample-01.mp3", "docs/audio-sample-03.mp3"]):
+        prompts = [
+            "You are listening to a demo of the Chatterbox TTS model running on VLLM.",
+            "This is a separate prompt to test the batching implementation.",
+            "And here is a third prompt. It's a bit longer than the first one, but not by much.",
+        ]
     
-    audios = model.generate(prompts, audio_prompt_path=AUDIO_PROMPT_PATH, exaggeration=0.8, cfg_weight=0.5)
-    for i, audio in enumerate(audios):
-        ta.save(f"test-{i}.mp3", audio, model.sr)
+        audios = model.generate(prompts, audio_prompt_path=audio_prompt_path, exaggeration=0.8, cfg_weight=0.5)
+        for audio_idx, audio in enumerate(audios):
+            ta.save(f"test-{i}-{audio_idx}.mp3", audio, model.sr)

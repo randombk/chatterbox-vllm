@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from vllm import LLM, SamplingParams
+from functools import lru_cache
 
 import librosa
 import torch
@@ -98,12 +99,12 @@ class ChatterboxTTS:
     ENC_COND_LEN = 6 * S3_SR
     DEC_COND_LEN = 10 * S3GEN_SR
 
-    def __init__(self, t3: LLM, s3gen: S3Gen, ve: VoiceEncoder, conds: Conditionals):
+    def __init__(self, t3: LLM, s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals):
         self.sr = S3GEN_SR  # sample rate of synthesized audio
         self.t3 = t3
         self.s3gen = s3gen
         self.ve = ve
-        self.conds = conds
+        self.default_conds = default_conds
         self.hp = T3Config()
 
     @classmethod
@@ -118,8 +119,8 @@ class ChatterboxTTS:
         s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
         s3gen.to(device="cuda").eval()
 
-        conds = Conditionals.load(ckpt_dir / "conds.pt")
-        conds.to(device="cuda")
+        default_conds = Conditionals.load(ckpt_dir / "conds.pt")
+        default_conds.to(device="cuda")
 
         t3 = LLM(
             model=f"./t3-model",
@@ -129,7 +130,7 @@ class ChatterboxTTS:
             **kwargs,
         )
 
-        return cls(t3, s3gen, ve, conds=conds)
+        return cls(t3, s3gen, ve, default_conds=default_conds)
 
     @classmethod
     def from_pretrained(cls, *args, **kwargs) -> 'ChatterboxTTS':
@@ -138,7 +139,11 @@ class ChatterboxTTS:
 
         return cls.from_local(Path(local_path).parent, *args, **kwargs)
 
-    def prepare_audio_conditionals(self, wav_fpath: str, exaggeration: float = 0.5):
+    @lru_cache(maxsize=10)
+    def get_audio_conditionals(self, wav_fpath: Optional[str] = None) -> Conditionals:
+        if wav_fpath is None:
+            return self.default_conds
+        
         ## Load reference wav
         s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
         ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
@@ -158,10 +163,10 @@ class ChatterboxTTS:
         t3_cond = T3Cond(
             speaker_emb=ve_embed,
             cond_prompt_speech_tokens=t3_cond_prompt_tokens,
-            emotion_adv=exaggeration * torch.ones(1, 1),
+            emotion_adv=0.5 * torch.ones(1, 1),
         )
 
-        self.conds = Conditionals(t3_cond, s3gen_ref_dict)
+        return Conditionals(t3_cond, s3gen_ref_dict)
 
     def generate(
         self,
@@ -171,17 +176,15 @@ class ChatterboxTTS:
         cfg_weight: float = 0.5,
         temperature: float = 0.8,
     ) -> list[any]:
-        if audio_prompt_path:
-            self.prepare_audio_conditionals(audio_prompt_path, exaggeration=exaggeration)
-        else:
-            assert self.conds is not None, "Please `prepare_audio_conditionals` first or specify `audio_prompt_path`"
+        conds = self.get_audio_conditionals(audio_prompt_path)
+        t3conds = conds.t3
+        s3gen_ref = conds.gen
 
         # Update exaggeration if needed
-        if exaggeration != self.conds.t3.emotion_adv[0, 0]:
-            _cond: T3Cond = self.conds.t3
-            self.conds.t3 = T3Cond(
-                speaker_emb=_cond.speaker_emb,
-                cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
+        if exaggeration != 0.5:
+            t3conds = T3Cond(
+                speaker_emb=t3conds.speaker_emb,
+                cond_prompt_speech_tokens=t3conds.cond_prompt_speech_tokens,
                 emotion_adv=exaggeration * torch.ones(1, 1),
             )
 
@@ -192,7 +195,7 @@ class ChatterboxTTS:
                     {
                         "prompt": "[START]" + punc_norm(text) + "[STOP]",
                         "multi_modal_data": {
-                            "conditionals": [self.conds.t3.to(device="cpu")],
+                            "conditionals": [t3conds.to(device="cpu")],
                         },
                     }
                     for text in prompts
@@ -224,7 +227,7 @@ class ChatterboxTTS:
 
                     wav, _ = self.s3gen.inference(
                         speech_tokens=speech_tokens.to(device="cuda"),
-                        ref_dict=self.conds.to(device="cuda").gen,
+                        ref_dict=s3gen_ref,
                     )
                     results.append(wav.cpu())
 
