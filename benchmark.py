@@ -85,8 +85,8 @@ if __name__ == "__main__":
             model.generate(
                 text[i:i+batch_size],
                 audio_prompt_path=AUDIO_PROMPT_PATH,
-                
-                # Supports anything in https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html
+
+                # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
                 min_p=0.1,
             ))
     generation_time = time.time()

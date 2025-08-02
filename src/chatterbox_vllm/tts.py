@@ -183,7 +183,7 @@ class ChatterboxTTS:
         # cfg_weight: float = 0.5,
         temperature: float = 0.8,
         
-        # Supports anything in https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html        
+        # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams        
         *args, **kwargs,
     ) -> list[any]:
         conds = self.get_audio_conditionals(audio_prompt_path)
