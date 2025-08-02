@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+
+from typing import List
+import torchaudio as ta
+from chatterbox_vllm.tts import ChatterboxTTS
+import time
+import re
+import torch
+
+# AUDIO_PROMPT_PATH = "docs/audio-sample-03.mp3"
+AUDIO_PROMPT_PATH = "AUDIO_PROMPT.mp3"
+TEXT_PATH = "docs/benchmark-text-1.txt"
+MAX_CHUNK_SIZE = 300 # characters
+
+
+# Given a line of text, split it into chunks of at most MAX_CHUNK_SIZE characters
+# at sentence boundaries, forming roughly equal-sized chunks
+def split_text_by_sentence(text: str) -> List[str]:
+    sentences = text.split(". ")
+    n_chunks_needed = len(text) // MAX_CHUNK_SIZE + 1
+    approx_chunk_size = len(text) // n_chunks_needed
+
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    for sentence in sentences:
+        # Remove excess whitespace like consecutive spaces, newlines, etc.
+        sentence = " ".join(sentence.split())
+        sentence = sentence.strip()
+
+        if current_length + len(sentence) > approx_chunk_size:
+            chunks.append(". ".join(current_chunk))
+            current_chunk = [sentence]
+            current_length = len(sentence)
+        else:
+            current_chunk.append(sentence)
+            current_length += len(sentence)
+
+    if current_chunk:
+        chunks.append(". ".join(current_chunk))
+
+    # If chunks end with a-z0-9, add a period to the end
+    chunks = [chunk + "." if re.match(r"[a-zA-Z0-9]", chunk[-1]) else chunk for chunk in chunks if len(chunk) > 0]
+
+    return chunks
+
+
+if __name__ == "__main__":
+    with open(TEXT_PATH, "r") as f:
+        text = f.read()
+    
+    # Remove lines starting with #
+    text = "\n".join([line for line in text.split("\n") if not line.startswith("#")])
+
+    # Chunk text by newlines
+    text = [i.strip() for i in text.split("\n") if len(i.strip()) > 0]
+
+    # Split text into chunks
+    text = [split_text_by_sentence(line) for line in text]
+
+    # Flatten list
+    text = [item for sublist in text for item in sublist]
+
+    print(f"[BENCHMARK] Text chunked into {len(text)} chunks")
+    
+    start_time = time.time()
+    model = ChatterboxTTS.from_pretrained(
+        gpu_memory_utilization = 0.6,
+        max_model_len = MAX_CHUNK_SIZE * 3, # Rough heuristic
+
+        # Disable CUDA graphs - it's causing tensors to get corrupted right now.
+        enforce_eager = True,
+    )
+    model_load_time = time.time()
+    print(f"[BENCHMARK] Model loaded in {model_load_time - start_time} seconds")
+
+    # Process in batches of 40 chunks at a time.
+    #   => ~40 seems to work well on a 3060ti (8GB VRAM)
+    #   => ~100 seems to work well on a 3090 (24GB VRAM)
+    # You may need to adjust the batch size based on your GPU memory.
+    # This is needed because there are scaling elements that VLLM doesn't fully account for,
+    # resulting in OOM errors caused by VLLM trying to run more parallel queries than it can handle.
+    audios = []
+    batch_size = 40
+    for i in range(0, len(text), batch_size):
+        audios.extend(model.generate(text[i:i+batch_size], audio_prompt_path=AUDIO_PROMPT_PATH))
+    generation_time = time.time()
+    print(f"[BENCHMARK] Generation completed in {generation_time - model_load_time} seconds")
+
+    # Stitch audio chunks together
+    full_audio = torch.cat(audios, dim=-1)
+    ta.save(f"benchmark.mp3", full_audio, model.sr)
+    print(f"[BENCHMARK] Audio saved to benchmark.mp3")
+    print(f"[BENCHMARK] Total time: {time.time() - start_time} seconds")

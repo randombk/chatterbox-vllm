@@ -1,0 +1,244 @@
+# Source: https://blog.edward-li.com/tech/advanced-python-features/
+
+Edward Li's Blog. 14 Advanced Python Features.
+
+Python is one of the most widely adopted programming languages in the world. Yet, because of it's ease and simplicity to just "get something working", it's also one of the most underappreciated.
+
+If you search for Top 10 Advanced Python Tricks on Google or any other search engine, you'll find tons of blogs or LinkedIn articles going over trivial (but still useful) things like generators or tuples.
+
+However, as someone who's written Python for the past 12 years, I've come across a lot of really interesting, underrated, unique, or (as some might say) "un-pythonic" tricks to really level up what Python can do.
+
+That's why I decided to compile the top 14 of said features alongside examples and additional resources if you want to dive deeper into any of them.
+
+1. Typing Overloads
+
+@overload is a decorator from Python's typing module that lets you define multiple signatures for the same function. Each overload tells the type checker exactly what types to expect when specific parameters are passed in.
+
+Note that Python's @overload works differently than some other languages. In Python, @overload tells the type checker to expect different signatures for the same function. It doesn't actually define multiple versions of the function itself, unlike Java or C++.
+
+For example, the code below dictates that only list[str] can be returned if mode=split, and only str can be returned if mode=upper. (The Literal type also forces mode to be either one of split or upper)
+
+Overloads can do more than just change return type based on arguments! In another example, we use typing overloads to ensure that either one of id OR username are passed in, but never both.
+
+Quick bonus trick: As you probably saw, Python also has support for String Literals. These help assert that only specific string values can be passed to a parameter, giving you even more type safety. Think of them like a lightweight form of Enums!
+
+2. Keyword-only and Positional-only Arguments
+
+By default, both required parameters and optional parameters can be assigned with both positional and keyword syntax. However, what if you don't want that to happen? Keyword-only and Positional-only args let you control that.
+
+Keyword-only and Positional-only arguments are especially helpful for API developers to enforce how their arguments may be used and passed in.
+
+3. Future Annotations
+
+A quick history lesson into Python's typing:
+
+This is less of a "Python Feature" and more of a history lesson into Python's type system, and what from __future__ import annotations does if you ever encounter it in production code.
+
+Python's typing system started off as a hack. Function annotation syntax was first introduced with PEP 3107 back in Python 3.0 as purely an extra way to decorate functions with no actual type-checking functionality.
+
+Proper specifications for type annotations were later added in Python 3.5 through PEP 484, but they were designed to be evaluated at bound / definition time. This worked great for simple cases, but it increasingly caused headaches with one type of problem: forward references.
+
+This meant that forward references (using a type before it gets defined) required falling back to string literals, making the code less elegant and more error-prone.
+
+Introduced as a PEP (Python Enhancement Proposal), PEP 563: Postponed Evaluation of Annotations aimed to fix this by changing when type annotations were evaluated. Instead of evaluating annotations at definition time, PEP 563 "string-ifies" types behind the scenes and postpones evaluation until they're actually needed, typically during static analysis. This allows for cleaner forward references without explicitly defining string literals and reduces the runtime overhead of type annotations.
+
+So what was the problem?
+
+For type checkers, this change is largely transparent. But because PEP 563 implements this by essentially treating all types as strings behind the scenes, anything that relies on accessing return types at runtime (i.e., ORMs, serialization libraries, validators, dependency injectors, etc.) will have compatibility issues with the new setup.
+
+That's why even after ten years after the initial proposal, modern Python (3.13 as of writing this) still relies on the same hacked-together type system introduced in Python 3.5.
+
+Recently, PEP 649 proposes a new method to handle Python function and class annotations through deferred, or "lazy," evaluation. Instead of evaluating annotations at the time of function or class definition, as is traditionally done, this approach delays their computation until they are actually accessed.
+
+This is achieved by compiling the annotation expressions into a separate function, stored in a special __annotate__ attribute. When the __annotations__ attribute is accessed for the first time, this function is invoked to compute and cache the annotations, making them readily available for subsequent accesses.
+
+This deferred evaluation strategy addresses issues like forward references and circular dependencies, as annotations are only evaluated when needed. Moreover, it enhances performance by avoiding the immediate computation of annotations that might not be used, and maintains full semantic information, supporting introspection and runtime type-checking tools.
+
+Bonus Fact: Since Python 3.11, Python now supports a "Self" type (PEP 673) that allows for proper typing of methods that return instances of their own class, solving this particular example of self-referential return types.
+
+4. Generics
+
+Did you know that Python has Generics? In fact, since Python 3.12, a newer, sleeker, and sexier syntax for Generics was introduced.
+
+Python 3.5 initially introduced Generics through the TypeVar syntax. However, PEP 695 for Python 3.12 revamped type annotations with native syntax for generics, type aliases, and more.
+
+This change also introduces an even more powerful version of variadic generics. Meaning you can have an arbitrary number of type parameters for complex data structures and operations.
+
+Finally, as part of the 3.12 typing changes, Python also introduced a new concise syntax for type aliases!
+
+It's important to note that NewType and TypeAlias (including the new type syntax) are slightly different! NewType creates a subtype that is not equivalent to its base type, whereas TypeAlias assigns an alternative name for an existing type.
+
+5. Protocols
+
+One of Python's major features (and also major complaints) is its support for Duck Typing. There's a saying that goes:
+"If it walks like a duck, swims like a duck, and quacks like a duck, then it probably is a duck."
+
+However, that raises the question: How do you type duck typing?
+
+That's where Protocols come in. Protocols (also known as Structural Subtyping) are typing classes in Python defining the structure or behavior that classes can follow without the use of interfaces or inheritance.
+
+In essence, Protocols check what your object can do, not what it is. They simply state that as long as an object implements certain methods or behaviors, it qualifies, regardless of its actual type or inheritance.
+
+Additional quick tip: Add the @runtime_checkable decorator if you want isinstance() checks to work alongside your Protocols!
+
+6. Context Managers
+
+Context Managers are objects that define the methods: __enter__() and __exit__(). The __enter__() method runs when you enter the with block, and the __exit__() method runs when you leave it (even if an exception occurs).
+
+Contextlib simplifies this process by wrapping all that boilerplate code in a single easy-to-use decorator.
+
+To create your own, write a function with the @contextlib.contextmanager decorator. Add setup code before yield, cleanup code after it. Any variables on yield will be passed in as additional context. That's it.
+
+The yield statement instructs the context manager to pause your function and lets content within the with block run.
+
+The real power with contextlib comes from its exception handling and state management. For example, the same logic with this following function:
+
+Using raw __enter__ and __exit__ methods would look like this:
+
+Both are functionally identical, but the @contextmanager decorator lets us write more readable and maintainable code by handling all the boilerplate for us.
+
+(No need to deal with exec_type, exec_val, exec_tb, etc!)
+
+7. Structural Pattern Matching
+
+Introduced in Python 3.10, Structural Pattern Matching gives Python developers a powerful alternative to traditional conditional logic. At its most basic, the syntax looks like this:
+
+The real power comes with destructuring! Match patterns break down complex data structures and extract values in a single step.
+
+You can also combine match-case with other Python features like walrus operators to create even more powerful patterns.
+
+8. Python Slots
+
+Slots are a way to potentially speed up the creation and access of any Python class.
+
+TLDR: They define a fixed set of attributes for classes, optimizing and speeding up accesses during runtime.
+
+Under the hood, Python classes store instance attributes in an internal dictionary called __dict__, meaning a hash table lookup is required each time you want to access a value.
+
+In contrast, __slots__ uses an array-like structure where attributes can be looked up in true O(1) time, bringing a minor overall speed bump to Python.
+
+There is still debate about whether __slots__ is worth using, as it complicates class definitions with very marginal or no performance benefits at all. However, it is a useful tool to have in your arsenal if you ever need it.
+
+
+9. Python Nitpicks
+
+This is not a Python "feature" or "tip" per se, but instead a handful of quick syntax tips to really clean up your Python codebase.
+
+As someone who's seen a lot of Python code.
+
+9.1 For-else statements
+
+If you ever need to check if a for loop completes without a break, for-else statements are a great way to accomplish this without using a temporary variable.
+
+9.2 Walrus Operator
+
+If you need to define and evaluate a variable all in one expression, the Walrus Operator (new in Python 3.8 with PEP 572) is a quick way to accomplish just that.
+
+Walrus operators are really useful for using a value right after checking if it is not None!
+
+9.3 Short Circuit Evaluation
+
+Short-circuit Evaluation is a shortcut for getting the "next available" or "next truthy" value in a list of expressions. It turns out you can simply chain or statements!
+
+NOTE: As some readers have pointed out, there are some hidden footguns with evaluating variables as booleans!
+
+Empty strings, zeros, and empty lists are all considered "falsy" values, which means you need to be extra careful when checking explicitly for None or 0.
+
+9.4 Operator Chaining
+
+Finally, Python lets you chain comparison operators together to shorten up integer range comparisons, making them more readable than the equivalent boolean expressions.
+
+10. Advanced f-string String Formatting
+
+Python's f-strings are no secret by now. Introduced in Python 3.6 with PEP 498, they are a better, cleaner, faster, and safer method of interpolating variables, objects, and expressions into strings.
+
+But did you know there is more to f-strings than just inserting variables? There exists a hidden formatting syntax called the Format Mini-Language that allows you to have much greater control over string formatting.
+
+11. Cache / lru_cache
+
+You can use the built-in @cache decorator to dramatically speed up recursive functions and expensive calculations! (which superseded @lru_cache in Python 3.9!)
+
+Since Python 3.2, @lru_cache was introduced as part of the functools module for quick & clean function memoization. Starting with Python 3.9, @cache was added for the same effect with less code. lru_cache still exists if you want explicit control of the cache size.
+
+12. Python Futures
+
+Did you know that Python has native Promise-like concurrency control?
+
+Python's concurrent.futures module gives you direct control over async operations, just like JS Promises. For example, they let you attach callbacks that run when the result is ready (just like JS's .then()).
+
+Python Futures also come with primitives to handle exceptions, set timeouts, or stop tasks completely.
+
+Just like modern JS, the asyncio module has its own Future that works seamlessly with Python's async/await syntax:
+
+Finally, for CPU or I/O bound tasks, Python's ThreadPoolExecutor can automatically create and manage futures for you.
+
+13. Proxy Properties
+
+Did you know you can make class attributes act as BOTH methods AND properties?!? This isn't a built-in feature of Python, but instead a demonstration of what you can do with clever use of Python's dunder (magic) methods and descriptors.
+
+(Note that this is very much an example implementation and should not be used in production)
+
+How does this work under the hood? It comes down to Python's Descriptor Protocol:
+
+The __get__ method transforms the ProxyProperty object into a descriptor.
+
+When you access c.value, Python calls __get__ which returns self (the descriptor instance).
+
+The __repr__ method handles property access (returning default values).
+
+The __call__ method handles method calls with parameters.
+
+This creates a dual-purpose attribute that can be both read directly AND called like a function!
+
+The benefit of this class is that it allows you to create intuitive APIs where a property might need configuration, or properties that should have sensible defaults but still allow for customization.
+
+If you want to look at a proper production-ready implementation of proxy properties, check out Codegen's implementation of ProxyProperty here: codegen/src/codegen/sdk/_proxy.py
+
+14. Metaclasses
+
+Finally, introducing one of Python's most powerful yet mysterious features: Metaclasses
+
+Classes in Python aren't just blueprints for objects. They're objects too! And every object needs a class that created it. So what creates class objects? Metaclasses.
+
+By default, Python uses the type metaclass to create all classes. For example, these two are equivalent to each other:
+
+To break down what those arguments mean, here is an example that creates a class with an attribute x and a method say_hi, that also subclasses off object.
+
+In essence, Metaclasses let you customize and modify these arguments during class creation. For example, here is a metaclass that doubles every integer attribute for a class:
+
+Here is another example of a metaclass that registers every class created into a registry.
+
+The problem is, decorators could achieve this same goal without the use of black magic (and it's often cleaner too).
+
+And that kind of brings to light the biggest problem with metaclasses:
+
+Almost 100% of the time, you will never need to touch them.
+
+In your day-to-day development, 99% of your code won't ever hit a use case where metaclasses could be useful. And of that 1%, 95% of those cases could just be solved with regular decorators, dunder methods, or just plain inheritance.
+
+That's why there is that one famous Python quote that goes:
+Metaclasses are deeper magic than 99% of users should ever worry about. If you wonder whether you need them, you don't. - Tim Peters
+
+But if you are that 1% which has a unique enough problem that only metaclasses can solve, they are a powerful tool that lets you tinker with the internals of the Python object system.
+
+As for some real-world examples of metaclasses:
+
+Python's "ABC" implementation uses metaclasses to implement abstract classes.
+Python's "Enum" implementation uses it to create enumeration types.
+A bunch of 3rd party libraries like Django, SQLAlchemy, Pydantic, and Pytest use metaclasses for a variety of purposes.
+
+Fin
+
+And that's it folks! 14 of some of the most interesting & underrated Python features that I've encountered in my Python career.
+
+If you've made it this far, shoot me a quick message as to which ones you've seen before and which ones you haven't! I'd love to hear from you.
+
+Happy Python-ing, y'all!
+
+Thank you to all the readers who pointed out and suggested improvements!
+
+If you notice any inaccuracies or have any feedback, please let me know!
+
+Contact: blog@edward-li.com
+
+Copyright 2025 Edward li

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import time
 
 from vllm import LLM, SamplingParams
 from functools import lru_cache
@@ -196,6 +197,7 @@ class ChatterboxTTS:
 
         # Norm and tokenize text
         with torch.inference_mode():
+            start_time = time.time()
             batch_results = self.t3.generate(
                 [
                     {
@@ -222,20 +224,25 @@ class ChatterboxTTS:
                     # frequency_penalty=cfg_weight,
                 )
             )
+            t3_gen_time = time.time() - start_time
+            print(f"[T3] Speech Token Generation time: {t3_gen_time:.2f}s")
 
+            start_time = time.time()
             results = []
             for i in range(len(batch_results)):
                 for j in range(len(batch_results[i].outputs)):
                     speech_tokens = batch_results[i].outputs[j].token_ids
-                    speech_tokens = torch.tensor(speech_tokens)
+                    speech_tokens = torch.tensor(speech_tokens, device="cuda")
                     speech_tokens = drop_invalid_tokens(speech_tokens)
                     speech_tokens = speech_tokens[speech_tokens < 6561]
 
                     wav, _ = self.s3gen.inference(
-                        speech_tokens=speech_tokens.to(device="cuda"),
+                        speech_tokens=speech_tokens,
                         ref_dict=s3gen_ref,
                     )
                     results.append(wav.cpu())
+            s3gen_gen_time = time.time() - start_time
+            print(f"[S3Gen] Wavform Generation time: {s3gen_gen_time:.2f}s")
 
             return results
         
