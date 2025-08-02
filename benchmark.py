@@ -7,10 +7,9 @@ import time
 import re
 import torch
 
-# AUDIO_PROMPT_PATH = "docs/audio-sample-03.mp3"
-AUDIO_PROMPT_PATH = "AUDIO_PROMPT.mp3"
+AUDIO_PROMPT_PATH = "docs/audio-sample-03.mp3"
 TEXT_PATH = "docs/benchmark-text-1.txt"
-MAX_CHUNK_SIZE = 300 # characters
+MAX_CHUNK_SIZE = 400 # characters
 
 
 # Given a line of text, split it into chunks of at most MAX_CHUNK_SIZE characters
@@ -75,8 +74,7 @@ if __name__ == "__main__":
     print(f"[BENCHMARK] Model loaded in {model_load_time - start_time} seconds")
 
     # Process in batches of 40 chunks at a time.
-    #   => ~40 seems to work well on a 3060ti (8GB VRAM)
-    #   => ~100 seems to work well on a 3090 (24GB VRAM)
+    #   => There seems to be some memory management issue that prevents us from going much higher...
     # You may need to adjust the batch size based on your GPU memory.
     # This is needed because there are scaling elements that VLLM doesn't fully account for,
     # resulting in OOM errors caused by VLLM trying to run more parallel queries than it can handle.

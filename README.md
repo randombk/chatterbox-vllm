@@ -71,7 +71,62 @@ Notes:
  * Benchmarks are done without CUDA graphs, as that is currently causing correctness issues.
  * There's some issues with my very rudimentary chunking logic, which is causing some occasional artifacts in output quality.
 
-## Run 1: RTX 3060ti
+## Run 1: RTX 3090
+
+System Specs:
+ * RTX 3090: 24GB VRAM
+ * AMD Ryzen 9 7900X @ 5.70GHz
+ * 128GB DDR5 4800 MT/s
+
+Settings & Results:
+* Input text: `docs/benchmark-text-1.txt` (6.6k words)
+* Input audio: `docs/audio-sample-03.mp3`
+* Exaggeration: 0.5, CFG: 0.5, Temperature: 0.8
+* CUDA graphs disabled, vLLM max memory utilization=0.6
+* Generated output length: 39m50s
+* Wall time: 2m30s
+* Generation time (without model startup time): 133s
+  * Time spent in T3 Llama token generation: 20.6s
+  * Time spent in S3Gen waveform generation: 111s
+
+Logs:
+```
+[BENCHMARK] Text chunked into 154 chunks
+[config.py:1472] Using max model len 1200
+[default_loader.py:272] Loading weights took 0.16 seconds
+[gpu_model_runner.py:1801] Model loading took 1.0107 GiB and 0.215037 seconds
+[gpu_model_runner.py:2238] Encoder cache will be initialized with a budget of 8192 tokens, and profiled with 241 conditionals items of the maximum feature size.
+[gpu_worker.py:232] Available KV cache memory: 12.59 GiB
+[kv_cache_utils.py:716] GPU KV cache size: 110,000 tokens
+[kv_cache_utils.py:720] Maximum concurrency for 1,200 tokens per request: 91.67x
+[BENCHMARK] Model loaded in 7.156545400619507 seconds
+Adding requests: 100%|████| 40/40 [00:00<00:00, 1686.08it/s]
+Processed prompts: 100%|████| 40/40 [00:05<00:00,  7.73it/s, est. speed input: 1487.13 toks/s, output: 3060.03 toks/s]
+[T3] Speech Token Generation time: 5.20s
+[S3Gen] Wavform Generation time: 29.09s
+Adding requests: 100%|████| 40/40 [00:00<00:00, 1832.95it/s]
+Processed prompts: 100%|████| 40/40 [00:05<00:00,  7.61it/s, est. speed input: 1522.47 toks/s, output: 3130.34 toks/s]
+[T3] Speech Token Generation time: 5.28s
+[S3Gen] Wavform Generation time: 30.40s
+Adding requests: 100%|████| 40/40 [00:00<00:00, 1801.83it/s]
+Processed prompts: 100%|████| 40/40 [00:05<00:00,  7.65it/s, est. speed input: 1326.87 toks/s, output: 2912.80 toks/s]
+[T3] Speech Token Generation time: 5.25s
+[S3Gen] Wavform Generation time: 28.37s
+Adding requests: 100%|████| 34/34 [00:00<00:00, 1780.35it/s]
+Processed prompts: 100%|████| 34/34 [00:04<00:00,  7.09it/s, est. speed input: 1274.34 toks/s, output: 2582.66 toks/s]
+[T3] Speech Token Generation time: 4.82s
+[S3Gen] Wavform Generation time: 23.74s
+[BENCHMARK] Generation completed in 132.7742235660553 seconds
+[BENCHMARK] Audio saved to benchmark.mp3
+[BENCHMARK] Total time: 144.99638843536377 seconds
+
+real	2m30.700s
+user	2m54.372s
+sys	0m2.205s
+```
+
+
+## Run 2: RTX 3060ti
 
 System Specs:
  * RTX 3060ti: 8GB VRAM
