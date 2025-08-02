@@ -81,7 +81,14 @@ if __name__ == "__main__":
     audios = []
     batch_size = 40
     for i in range(0, len(text), batch_size):
-        audios.extend(model.generate(text[i:i+batch_size], audio_prompt_path=AUDIO_PROMPT_PATH))
+        audios.extend(
+            model.generate(
+                text[i:i+batch_size],
+                audio_prompt_path=AUDIO_PROMPT_PATH,
+                
+                # Supports anything in https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html
+                min_p=0.1,
+            ))
     generation_time = time.time()
     print(f"[BENCHMARK] Generation completed in {generation_time - model_load_time} seconds")
 

@@ -182,6 +182,9 @@ class ChatterboxTTS:
         exaggeration: float = 0.5,
         # cfg_weight: float = 0.5,
         temperature: float = 0.8,
+        
+        # Supports anything in https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html        
+        *args, **kwargs,
     ) -> list[any]:
         conds = self.get_audio_conditionals(audio_prompt_path)
         t3conds = conds.t3
@@ -217,6 +220,9 @@ class ChatterboxTTS:
                     # From original Chatterbox HF generation args
                     top_p=0.8,
                     repetition_penalty=2.0,
+
+                    *args,
+                    **kwargs,
 
                     # HACK: I don't see a way to pass custom sampling params to vLLM.
                     # We'll squirrel away CFG Scale in the 'frequency_penalty' field, and extract/reset/set it
