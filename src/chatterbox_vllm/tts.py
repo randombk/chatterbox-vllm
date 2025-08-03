@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 import time
 
 from vllm import LLM, SamplingParams
@@ -180,7 +180,7 @@ class ChatterboxTTS:
 
     def generate(
         self,
-        prompts: list[str],
+        prompts: Union[str, list[str]],
         audio_prompt_path: Optional[str] = None,
         exaggeration: float = 0.5,
         # cfg_weight: float = 0.5,
@@ -194,6 +194,9 @@ class ChatterboxTTS:
         # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams        
         *args, **kwargs,
     ) -> list[any]:
+        if isinstance(prompts, str):
+            prompts = [prompts]
+
         conds = self.get_audio_conditionals(audio_prompt_path)
         t3conds = conds.t3
         s3gen_ref = conds.gen
