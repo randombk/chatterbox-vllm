@@ -134,9 +134,12 @@ class ChatterboxTTS:
         return cls(t3, s3gen, ve, default_conds=default_conds)
 
     @classmethod
-    def from_pretrained(cls, *args, **kwargs) -> 'ChatterboxTTS':
+    def from_pretrained(cls, 
+                        repo_id: str = REPO_ID,
+                        revision: str = "1b475dffa71fb191cb6d5901215eb6f55635a9b6",
+                        *args, **kwargs) -> 'ChatterboxTTS':
         for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
-            local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath, revision="1b475dffa71fb191cb6d5901215eb6f55635a9b6")
+            local_path = hf_hub_download(repo_id=repo_id, filename=fpath, revision=revision)
 
         # Ensure the symlink in './t3-model/model.safetensors' points to t3_cfg_path
         t3_cfg_path = Path(local_path).parent / "t3_cfg.safetensors"
