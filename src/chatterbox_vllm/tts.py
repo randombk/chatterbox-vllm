@@ -182,6 +182,11 @@ class ChatterboxTTS:
         exaggeration: float = 0.5,
         # cfg_weight: float = 0.5,
         temperature: float = 0.8,
+        max_tokens=1000,
+
+        # From original Chatterbox HF generation args
+        top_p=0.8,
+        repetition_penalty=2.0,
         
         # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams        
         *args, **kwargs,
@@ -215,11 +220,9 @@ class ChatterboxTTS:
                     temperature=temperature,
                     
                     stop_token_ids=[self.hp.stop_speech_token],
-                    max_tokens=1000,
-
-                    # From original Chatterbox HF generation args
-                    top_p=0.8,
-                    repetition_penalty=2.0,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
 
                     *args,
                     **kwargs,

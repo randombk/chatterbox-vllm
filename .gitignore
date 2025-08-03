@@ -12,6 +12,7 @@ htmlcov/
 .tox/
 .nox/
 .hypothesis/
+.gradio/
 
 # IDE
 .idea/

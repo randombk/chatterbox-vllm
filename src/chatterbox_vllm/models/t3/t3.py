@@ -473,6 +473,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # print("t3/input_ids", input_ids)
         # print("t3/kwargs", kwargs)
 
+        if inputs_embeds is None:
+            inputs_embeds = self.get_input_embeddings(input_ids, [])
+
         # Split the inputs_embeds into the three parts
         cond_embeds, uncond_embeds = inputs_embeds.split([self.dim, self.dim], dim=1)
         # print("t3/embeds", embeds.shape, embeds.dtype)
