@@ -45,18 +45,51 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 * ❌ APIs are not yet stable and may change.
 * ❌ Benchmarks and performance optimizations are not yet implemented.
 
-
 # Installation
 
+Prerequisites: `git` and [`uv`](https://pypi.org/project/uv/) must be installed
+
 ```
+git clone https://github.com/randombk/chatterbox-vllm.git
+cd chatterbox-vllm
 uv venv
 source .venv/bin/activate
 uv sync
 ```
 
-The package should automatically download the correct model weights from the Hugging Face Hub. You should then be able to run `python example-tts.py` to generate audio samples.
+The package should automatically download the correct model weights from the Hugging Face Hub.
 
 If you encounter CUDA issues, try resetting the venv and using `uv pip install -e .` instead of `uv sync`.
+
+# Example
+
+[This example](https://github.com/randombk/chatterbox-vllm/blob/master/example-tts.py) can be run with `python example-tts.py` to generate audio samples for three different prompts using three different voices.
+
+```python
+import torchaudio as ta
+from chatterbox_vllm.tts import ChatterboxTTS
+
+
+if __name__ == "__main__":
+    model = ChatterboxTTS.from_pretrained(
+        gpu_memory_utilization = 0.4,
+        max_model_len = 1000,
+
+        # Disable CUDA graphs to reduce startup time for one-off generation.
+        enforce_eager = True,
+    )
+
+    for i, audio_prompt_path in enumerate([None, "docs/audio-sample-01.mp3", "docs/audio-sample-03.mp3"]):
+        prompts = [
+            "You are listening to a demo of the Chatterbox TTS model running on VLLM.",
+            "This is a separate prompt to test the batching implementation.",
+            "And here is a third prompt. It's a bit longer than the first one, but not by much.",
+        ]
+    
+        audios = model.generate(prompts, audio_prompt_path=audio_prompt_path, exaggeration=0.8)
+        for audio_idx, audio in enumerate(audios):
+            ta.save(f"test-{i}-{audio_idx}.mp3", audio, model.sr)
+```
 
 # Benchmarks
 
