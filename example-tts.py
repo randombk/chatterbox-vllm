@@ -21,6 +21,6 @@ if __name__ == "__main__":
             "And here is a third prompt. It's a bit longer than the first one, but not by much.",
         ]
     
-        audios = model.generate(prompts, audio_prompt_path=audio_prompt_path, exaggeration=0.8)
+        audios = model.generate(prompts, audio_prompt_path=audio_prompt_path, exaggeration=0.5)
         for audio_idx, audio in enumerate(audios):
             ta.save(f"test-{i}-{audio_idx}.mp3", audio, model.sr)

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, Tuple, Any
 import time
 
 from vllm import LLM, SamplingParams
@@ -17,7 +17,8 @@ from chatterbox_vllm.models.t3.modules.t3_config import T3Config
 from .models.s3tokenizer import S3_SR, drop_invalid_tokens
 from .models.s3gen import S3GEN_SR, S3Gen
 from .models.voice_encoder import VoiceEncoder
-from .models.t3.modules.cond_enc import T3Cond
+from .models.t3.modules.cond_enc import T3Cond, T3CondEnc
+from .models.t3.modules.learned_pos_emb import LearnedPositionEmbeddings
 
 REPO_ID = "ResembleAI/chatterbox"
 
@@ -100,28 +101,42 @@ class ChatterboxTTS:
     ENC_COND_LEN = 6 * S3_SR
     DEC_COND_LEN = 10 * S3GEN_SR
 
-    def __init__(self, t3: LLM, s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals):
+    def __init__(self, target_device: str,
+                 t3: LLM, t3_config: T3Config, t3_cond_enc: T3CondEnc, t3_speech_emb: torch.nn.Embedding, t3_speech_pos_emb: LearnedPositionEmbeddings,
+                 s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals):
         self.sr = S3GEN_SR  # sample rate of synthesized audio
+        self.target_device = target_device
+        
         self.t3 = t3
+        self.t3_config = t3_config
+        self.t3_cond_enc = t3_cond_enc
+        self.t3_speech_emb = t3_speech_emb
+        self.t3_speech_pos_emb = t3_speech_pos_emb
+
         self.s3gen = s3gen
         self.ve = ve
         self.default_conds = default_conds
-        self.hp = T3Config()
 
     @classmethod
-    def from_local(cls, ckpt_dir: str, **kwargs) -> 'ChatterboxTTS':
+    def from_local(cls, ckpt_dir: str, target_device: str = "cuda", **kwargs) -> 'ChatterboxTTS':
         ckpt_dir = Path(ckpt_dir)
 
-        ve = VoiceEncoder()
-        ve.load_state_dict(load_file(ckpt_dir / "ve.safetensors"))
-        ve.eval()
+        t3_config = T3Config()
 
-        s3gen = S3Gen()
-        s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
-        s3gen.to(device="cuda").eval()
+        # Load *just* the necessary weights to perform inference with T3CondEnc
+        t3_weights = load_file(ckpt_dir / "t3_cfg.safetensors")
 
-        default_conds = Conditionals.load(ckpt_dir / "conds.pt")
-        default_conds.to(device="cuda")
+        t3_enc = T3CondEnc(t3_config)
+        t3_enc.load_state_dict({ k.replace('cond_enc.', ''):v for k,v in t3_weights.items() if k.startswith('cond_enc.') })
+        t3_enc = t3_enc.to(device=target_device).eval()
+
+        t3_speech_emb = torch.nn.Embedding(t3_config.speech_tokens_dict_size, t3_config.n_channels)
+        t3_speech_emb.load_state_dict({ k.replace('speech_emb.', ''):v for k,v in t3_weights.items() if k.startswith('speech_emb.') })
+        t3_speech_emb = t3_speech_emb.to(device=target_device).eval()
+
+        t3_speech_pos_emb = LearnedPositionEmbeddings(t3_config.max_speech_tokens + 2 + 2, t3_config.n_channels)
+        t3_speech_pos_emb.load_state_dict({ k.replace('speech_pos_emb.', ''):v for k,v in t3_weights.items() if k.startswith('speech_pos_emb.') })
+        t3_speech_pos_emb = t3_speech_pos_emb.to(device=target_device).eval()
 
         t3 = LLM(
             model=f"./t3-model",
@@ -131,7 +146,22 @@ class ChatterboxTTS:
             **kwargs,
         )
 
-        return cls(t3, s3gen, ve, default_conds=default_conds)
+        ve = VoiceEncoder()
+        ve.load_state_dict(load_file(ckpt_dir / "ve.safetensors"))
+        ve = ve.to(device=target_device).eval()
+
+        s3gen = S3Gen()
+        s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
+        s3gen = s3gen.to(device=target_device).eval()
+
+        default_conds = Conditionals.load(ckpt_dir / "conds.pt")
+        default_conds.to(device=target_device)
+
+        return cls(
+            target_device=target_device,
+            t3=t3, t3_config=t3_config, t3_cond_enc=t3_enc, t3_speech_emb=t3_speech_emb, t3_speech_pos_emb=t3_speech_pos_emb,
+            s3gen=s3gen, ve=ve, default_conds=default_conds,
+        )
 
     @classmethod
     def from_pretrained(cls, 
@@ -150,9 +180,9 @@ class ChatterboxTTS:
         return cls.from_local(Path(local_path).parent, *args, **kwargs)
 
     @lru_cache(maxsize=10)
-    def get_audio_conditionals(self, wav_fpath: Optional[str] = None) -> Conditionals:
+    def get_audio_conditionals(self, wav_fpath: Optional[str] = None) -> Tuple[dict[str, Any], torch.Tensor, torch.Tensor]:
         if wav_fpath is None:
-            return self.default_conds
+            return self.default_conds.gen, self.default_conds.t3.speaker_emb, self.default_conds.t3.cond_prompt_speech_tokens
         
         ## Load reference wav
         s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
@@ -163,20 +193,14 @@ class ChatterboxTTS:
 
         # Speech cond prompt tokens
         s3_tokzr = self.s3gen.tokenizer
-        t3_cond_prompt_tokens, _ = s3_tokzr.forward([ref_16k_wav[:self.ENC_COND_LEN]], max_len=self.hp.speech_cond_prompt_len)
+        t3_cond_prompt_tokens, _ = s3_tokzr.forward([ref_16k_wav[:self.ENC_COND_LEN]], max_len=self.t3_config.speech_cond_prompt_len)
         t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens)
 
         # Voice-encoder speaker embedding
         ve_embed = torch.from_numpy(self.ve.embeds_from_wavs([ref_16k_wav], sample_rate=S3_SR))
         ve_embed = ve_embed.mean(axis=0, keepdim=True)
 
-        t3_cond = T3Cond(
-            speaker_emb=ve_embed,
-            cond_prompt_speech_tokens=t3_cond_prompt_tokens,
-            emotion_adv=0.5 * torch.ones(1, 1),
-        )
-
-        return Conditionals(t3_cond, s3gen_ref_dict)
+        return s3gen_ref_dict, ve_embed.to(device=self.target_device), t3_cond_prompt_tokens.to(device=self.target_device)
 
     def generate(
         self,
@@ -197,27 +221,29 @@ class ChatterboxTTS:
         if isinstance(prompts, str):
             prompts = [prompts]
 
-        conds = self.get_audio_conditionals(audio_prompt_path)
-        t3conds = conds.t3
-        s3gen_ref = conds.gen
-
-        # Update exaggeration if needed
-        if exaggeration != 0.5:
-            t3conds = T3Cond(
-                speaker_emb=t3conds.speaker_emb,
-                cond_prompt_speech_tokens=t3conds.cond_prompt_speech_tokens,
-                emotion_adv=exaggeration * torch.ones(1, 1),
-            )
+        s3gen_ref, ve_embed, t3_cond_prompt_tokens = self.get_audio_conditionals(audio_prompt_path)
+        
+        if t3_cond_prompt_tokens.shape != (0,):
+            cond_prompt_speech_emb = self.t3_speech_emb(t3_cond_prompt_tokens)[0] + self.t3_speech_pos_emb(t3_cond_prompt_tokens)
+        
+        cond_emb = self.t3_cond_enc(T3Cond(
+            speaker_emb=ve_embed,
+            cond_prompt_speech_tokens=t3_cond_prompt_tokens,
+            cond_prompt_speech_emb=cond_prompt_speech_emb,
+            emotion_adv=exaggeration * torch.ones(1, 1)
+        ).to(device=self.target_device)).to(device="cpu")  # Conditionals need to be given to VLLM in CPU
 
         # Norm and tokenize text
+        prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
+
         with torch.inference_mode():
             start_time = time.time()
             batch_results = self.t3.generate(
                 [
                     {
-                        "prompt": "[START]" + punc_norm(text) + "[STOP]",
+                        "prompt": text,
                         "multi_modal_data": {
-                            "conditionals": [t3conds.to(device="cpu")],
+                            "conditionals": [cond_emb],
                         },
                     }
                     for text in prompts
@@ -225,7 +251,7 @@ class ChatterboxTTS:
                 sampling_params=SamplingParams(
                     temperature=temperature,
                     
-                    stop_token_ids=[self.hp.stop_speech_token],
+                    stop_token_ids=[self.t3_config.stop_speech_token],
                     max_tokens=max_tokens,
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
