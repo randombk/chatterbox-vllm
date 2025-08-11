@@ -106,7 +106,7 @@ class ChatterboxTTS:
                  s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals):
         self.sr = S3GEN_SR  # sample rate of synthesized audio
         self.target_device = target_device
-        
+
         self.t3 = t3
         self.t3_config = t3_config
         self.t3_cond_enc = t3_cond_enc
@@ -164,7 +164,7 @@ class ChatterboxTTS:
         )
 
     @classmethod
-    def from_pretrained(cls, 
+    def from_pretrained(cls,
                         repo_id: str = REPO_ID,
                         revision: str = "1b475dffa71fb191cb6d5901215eb6f55635a9b6",
                         *args, **kwargs) -> 'ChatterboxTTS':
@@ -180,58 +180,94 @@ class ChatterboxTTS:
         return cls.from_local(Path(local_path).parent, *args, **kwargs)
 
     @lru_cache(maxsize=10)
-    def get_audio_conditionals(self, wav_fpath: Optional[str] = None) -> Tuple[dict[str, Any], torch.Tensor, torch.Tensor]:
+    def get_audio_conditionals(self, wav_fpath: Optional[str] = None) -> Tuple[dict[str, Any], torch.Tensor]:
         if wav_fpath is None:
-            return self.default_conds.gen, self.default_conds.t3.speaker_emb, self.default_conds.t3.cond_prompt_speech_tokens
-        
-        ## Load reference wav
-        s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
-        ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
+            s3gen_ref_dict = self.default_conds.gen
+            t3_cond_prompt_tokens = self.default_conds.t3.cond_prompt_speech_tokens
+            ve_embed = self.default_conds.t3.speaker_emb
+        else:
+            ## Load reference wav
+            s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
+            ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
 
-        s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]
-        s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR)
+            s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]
+            s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR)
 
-        # Speech cond prompt tokens
-        s3_tokzr = self.s3gen.tokenizer
-        t3_cond_prompt_tokens, _ = s3_tokzr.forward([ref_16k_wav[:self.ENC_COND_LEN]], max_len=self.t3_config.speech_cond_prompt_len)
-        t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens)
+            # Speech cond prompt tokens
+            s3_tokzr = self.s3gen.tokenizer
+            t3_cond_prompt_tokens, _ = s3_tokzr.forward([ref_16k_wav[:self.ENC_COND_LEN]], max_len=self.t3_config.speech_cond_prompt_len)
+            t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens)
 
-        # Voice-encoder speaker embedding
-        ve_embed = torch.from_numpy(self.ve.embeds_from_wavs([ref_16k_wav], sample_rate=S3_SR))
-        ve_embed = ve_embed.mean(axis=0, keepdim=True)
+            # Voice-encoder speaker embedding
+            ve_embed = torch.from_numpy(self.ve.embeds_from_wavs([ref_16k_wav], sample_rate=S3_SR))
+            ve_embed = ve_embed.mean(axis=0, keepdim=True)
 
-        return s3gen_ref_dict, ve_embed.to(device=self.target_device), t3_cond_prompt_tokens.to(device=self.target_device)
+        cond_prompt_speech_emb = self.t3_speech_emb(t3_cond_prompt_tokens)[0] + self.t3_speech_pos_emb(t3_cond_prompt_tokens)
+
+        cond_emb = self.t3_cond_enc(T3Cond(
+            speaker_emb=ve_embed,
+            cond_prompt_speech_tokens=t3_cond_prompt_tokens,
+            cond_prompt_speech_emb=cond_prompt_speech_emb,
+            emotion_adv=0.5 * torch.ones(1, 1)
+        ).to(device=self.target_device)).to(device="cpu")  # Conditionals need to be given to VLLM in CPU
+
+        return s3gen_ref_dict, cond_emb
+
+    def update_exaggeration(self, cond_emb: torch.Tensor, exaggeration: float) -> torch.Tensor:
+        if exaggeration == 0.5:
+            return cond_emb
+
+        new_cond_emb = cond_emb.clone()
+        new_cond_emb[-1] = self.t3_cond_enc.emotion_adv_fc(exaggeration * torch.ones(1, 1).to(self.target_device)).to('cpu')
+        return new_cond_emb
+
 
     def generate(
         self,
         prompts: Union[str, list[str]],
         audio_prompt_path: Optional[str] = None,
         exaggeration: float = 0.5,
-        # cfg_weight: float = 0.5,
         temperature: float = 0.8,
         max_tokens=1000,
 
         # From original Chatterbox HF generation args
         top_p=0.8,
         repetition_penalty=2.0,
-        
-        # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams        
+
+        # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
+        *args, **kwargs,
+    ) -> list[any]:
+        s3gen_ref, cond_emb = self.get_audio_conditionals(audio_prompt_path)
+        cond_emb = self.update_exaggeration(cond_emb, exaggeration)
+
+        return self.generate_with_conds(
+            prompts=prompts,
+            s3gen_ref=s3gen_ref,
+            cond_emb=cond_emb,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            *args, **kwargs
+        )
+
+    def generate_with_conds(
+        self,
+        prompts: Union[str, list[str]],
+        s3gen_ref: dict[str, Any],
+        cond_emb: torch.Tensor,
+        temperature: float = 0.8,
+        max_tokens=1000,
+
+        # From original Chatterbox HF generation args
+        top_p=0.8,
+        repetition_penalty=2.0,
+
+        # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
         *args, **kwargs,
     ) -> list[any]:
         if isinstance(prompts, str):
             prompts = [prompts]
-
-        s3gen_ref, ve_embed, t3_cond_prompt_tokens = self.get_audio_conditionals(audio_prompt_path)
-        
-        if t3_cond_prompt_tokens.shape != (0,):
-            cond_prompt_speech_emb = self.t3_speech_emb(t3_cond_prompt_tokens)[0] + self.t3_speech_pos_emb(t3_cond_prompt_tokens)
-        
-        cond_emb = self.t3_cond_enc(T3Cond(
-            speaker_emb=ve_embed,
-            cond_prompt_speech_tokens=t3_cond_prompt_tokens,
-            cond_prompt_speech_emb=cond_prompt_speech_emb,
-            emotion_adv=exaggeration * torch.ones(1, 1)
-        ).to(device=self.target_device)).to(device="cpu")  # Conditionals need to be given to VLLM in CPU
 
         # Norm and tokenize text
         prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
@@ -250,7 +286,7 @@ class ChatterboxTTS:
                 ],
                 sampling_params=SamplingParams(
                     temperature=temperature,
-                    
+
                     stop_token_ids=[self.t3_config.stop_speech_token],
                     max_tokens=max_tokens,
                     top_p=top_p,
@@ -286,4 +322,4 @@ class ChatterboxTTS:
             print(f"[S3Gen] Wavform Generation time: {s3gen_gen_time:.2f}s")
 
             return results
-        
+
