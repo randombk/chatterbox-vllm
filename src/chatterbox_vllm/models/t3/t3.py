@@ -25,19 +25,17 @@ from vllm.multimodal.processing import (
     PromptUpdate,
     MultiModalInputs,
     PlaceholderRange,
-    PromptReplacement,
     PromptUpdate,
 )
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
-from vllm.transformers_utils.tokenizer_base import TokenizerRegistry
 
 from chatterbox_vllm.models.t3.modules.learned_pos_emb import LearnedPositionEmbeddings
 from chatterbox_vllm.models.t3.modules.t3_config import T3Config
 from .modules.cond_enc import T3Cond, T3CondEnc
 
-# Register tokenizer
-TokenizerRegistry.register("EnTokenizer", "chatterbox_vllm.models.t3.entokenizer", "EnTokenizer")
+
+DECODE_PLACEHOLDER_TOKEN = 695  # [PLACEHOLDER55]
 
 
 class T3ProcessingInfo(BaseProcessingInfo):
@@ -81,12 +79,6 @@ class ConditionalsEmbeddingItems(ModalityDataItems[T3Cond, T3Cond]):
     def get_passthrough_data(self) -> Mapping[str, T3Cond]:
         return {"conditionals": self.data}
 
-    # def get_feature_size(self, item_idx: int) -> int:
-    #     return self.data.speaker_emb.shape[0] + \
-    #         self.data.clap_emb.shape[0] + \
-    #         self.data.cond_prompt_speech_tokens.shape[0] + \
-    #         self.data.cond_prompt_speech_emb.shape[0]
-       
 
 class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
     def _get_data_parser(self) -> MultiModalDataParser:
@@ -174,7 +166,7 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
             # For prompt IDs, we're going to insert a special start token that will be replaced with the actual conditioning embeddings.
             # This is a hack to help us unbatch batched inputs. The exact number doesn't matter so long as it won't naturally appear in
             # the input.
-            [695] # [PLACEHOLDER55]
+            [DECODE_PLACEHOLDER_TOKEN]
             +[prompt_ids[0]] * (n_cond_tokens-1) # Conditionals
             + prompt_ids # Text prompt
             + [0] # Start of speech token
@@ -245,9 +237,6 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         self.cfg_scale = float(os.environ.get("CHATTERBOX_CFG_SCALE", "0.5"))
         print("Applying CFG scale:", self.cfg_scale)
 
-        # HACK: We need some way to track the number of text tokens in the prefill stage.
-        # self._text_tokens_len = 0
-
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loaded_params: set[str] = set()
@@ -298,6 +287,17 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         input_ids: torch.Tensor,
         multimodal_embeddings: list[MultiModalEmbeddings],
     ) -> list[torch.Tensor, Optional[MultiModalEmbeddings]]:
+        """
+        Split the input IDs into prefill and decode parts.
+        Via the MM input replacement, the prefill part always starts with the placeholder
+        token, and ends with two 0 tokens.
+
+        The decode part is everything else.
+
+        Returns a list of tuples, where the first element is the input IDs for the chunk,
+        and the second element is the associated multimodal embedding if the chunk is a decode part.
+        If the chunk is a prefill part, the second element is None.
+        """
         output = []
 
         # Keep a buffer of current tokens
@@ -313,7 +313,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # If we we switch out of block mode, add the multimodal embedding
         for input_id in input_ids:
             # Check Block header
-            if input_id == 695:
+            if input_id == DECODE_PLACEHOLDER_TOKEN:
                 if buffer:
                     output.append((torch.tensor(buffer).to(input_ids.device), None))
                 buffer = []
@@ -355,7 +355,6 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             # print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype, input_ids)
             # print("t3/get_input_embeddings/multimodal_embeddings", [i.shape for i in (multimodal_embeddings or [])])
 
-            # Split out prefill and decode using the heuristic and the placeholder token
             out = []
             for ids, multimodal_embedding in self.split_prefill_decode(input_ids, multimodal_embeddings):
                 # print("t3/get_input_embeddings/ids", ids.shape, ids.dtype, ids)
@@ -374,10 +373,6 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
                 # portion. The last token is a placeholder for the start of speech token.
                 text_ids = ids[34:-1]
                 text_emb = self.text_emb(text_ids)
-
-                # HACK: Remember the number of text tokens so we can apply speech positional embeddings later
-                # This will likely break batching, but will likely need a VLLM change to fix.
-                # self._text_tokens_len = len(text_ids)
 
                 start_of_speech_token = torch.tensor([self.t3conf.start_speech_token]).to(ids.device)
                 start_of_speech_emb = self.speech_emb(start_of_speech_token.unsqueeze(0))[0]
@@ -410,23 +405,10 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # print("t3/compute_logits/normal_hidden_states", normal_hidden_states.shape, normal_hidden_states.dtype)
         # print("t3/compute_logits/cfg_hidden_states", cfg_hidden_states.shape, cfg_hidden_states.dtype)
 
-        # HACK: We're going to extract the CFG scale from the sampling metadata
-        # Recall that we squirreled away the CFG scale in the frequency_penalty field.
-        # BUG: This is not working - https://github.com/vllm-project/vllm/issues/15115
-        # if sampling_metadata is None:
-        #     cfg_scale = 0.5
-        # else:
-        #     cfg_scale = sampling_metadata.frequency_penalty
-        #     sampling_metadata.frequency_penalty = 0.0
-        #     print("t3/compute_logits/cfg_scale", cfg_scale)
-
         cond_logits = self.logits_processor(self.speech_head, cond_hidden_states, sampling_metadata)
         uncond_logits = self.logits_processor(self.speech_head, uncond_hidden_states, sampling_metadata)
 
         logits = cond_logits + self.cfg_scale * (cond_logits - uncond_logits)
-
-        # if sampling_metadata is not None:
-        #     sampling_metadata.frequency_penalty = cfg_scale
 
         # print("t3/compute_logits/logit with the highest probability (cond, uncond, post-cfg):", cond_logits.argmax(), uncond_logits.argmax(), logits.argmax())
         return logits
@@ -456,12 +438,8 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # print("t3/embeds", embeds.shape, embeds.dtype)
         # print("t3/cfg_embeds", cfg_embeds.shape, cfg_embeds.dtype)
 
-        # HACK: We are going to apply speech positional embeddings here
-        # if len(embeds) == 1:
-        #     position_offset = positions - (self._text_tokens_len + 34) # 0 is already accounted for via the start of speech token
-        #     embeds = embeds + self.precomputed_speech_pos_emb[position_offset]
-        #     cfg_embeds = cfg_embeds + self.precomputed_speech_pos_emb[position_offset]
-    
+        # TODO: Apply speech positional embeddings here
+
         hidden_states = self.tfmr(
             input_ids=None,
             positions=torch.cat([positions, positions], dim=0),

@@ -236,9 +236,16 @@ vLLM does not support CFG natively, so substantial hacks were needs to make it w
 
 # Changelog
 
-## `0.1.0`:
+## `0.1.1`
+* Misc minor cleanups
+* API changes:
+  * Use `max_batch_size` instead of `gpu_memory_utilization`
+  * Use `compile=False` (default) instead of `enforce_eager=True`
+  * Look at the latest examples to follow API changes. As a reminder, I do not expect the API to become stable until `1.0.0`.
+
+## `0.1.0`
 * Initial publication to pypi
 * Moved audio conditioning processing out of vLLM to avoid re-computing it for every request.
 
-## `0.0.1`:
+## `0.0.1`
 * Initial release

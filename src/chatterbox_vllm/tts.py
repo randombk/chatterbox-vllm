@@ -19,50 +19,9 @@ from .models.s3gen import S3GEN_SR, S3Gen
 from .models.voice_encoder import VoiceEncoder
 from .models.t3.modules.cond_enc import T3Cond, T3CondEnc
 from .models.t3.modules.learned_pos_emb import LearnedPositionEmbeddings
+from .text_utils import punc_norm
 
 REPO_ID = "ResembleAI/chatterbox"
-
-def punc_norm(text: str) -> str:
-    """
-        Quick cleanup func for punctuation from LLMs or
-        containing chars not seen often in the dataset
-    """
-    if len(text) == 0:
-        return "You need to add some text for me to talk."
-
-    # Capitalise first letter
-    if text[0].islower():
-        text = text[0].upper() + text[1:]
-
-    # Remove multiple space chars
-    text = " ".join(text.split())
-
-    # Replace uncommon/llm punc
-    punc_to_replace = [
-        ("...", ", "),
-        ("…", ", "),
-        (":", ","),
-        (" - ", ", "),
-        (";", ", "),
-        ("—", "-"),
-        ("–", "-"),
-        (" ,", ","),
-        ("“", "\""),
-        ("”", "\""),
-        ("‘", "'"),
-        ("’", "'"),
-    ]
-    for old_char_sequence, new_char in punc_to_replace:
-        text = text.replace(old_char_sequence, new_char)
-
-    # Add full stop if no ending punc
-    text = text.rstrip(" ")
-    sentence_enders = {".", "!", "?", "-", ","}
-    if not any(text.endswith(p) for p in sentence_enders):
-        text += "."
-
-    return text
-
 
 @dataclass
 class Conditionals:
@@ -101,13 +60,12 @@ class ChatterboxTTS:
     ENC_COND_LEN = 6 * S3_SR
     DEC_COND_LEN = 10 * S3GEN_SR
 
-    def __init__(self, target_device: str,
+    def __init__(self, target_device: str, max_model_len: int,
                  t3: LLM, t3_config: T3Config, t3_cond_enc: T3CondEnc, 
                  t3_speech_emb: torch.nn.Embedding, t3_speech_pos_emb: LearnedPositionEmbeddings,
                  s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals):
-        self.sr = S3GEN_SR  # sample rate of synthesized audio
         self.target_device = target_device
-
+        self.max_model_len = max_model_len
         self.t3 = t3
         self.t3_config = t3_config
         self.t3_cond_enc = t3_cond_enc
@@ -118,8 +76,16 @@ class ChatterboxTTS:
         self.ve = ve
         self.default_conds = default_conds
 
+    @property
+    def sr(self) -> int:
+        """Sample rate of synthesized audio"""
+        return S3GEN_SR
+
     @classmethod
-    def from_local(cls, ckpt_dir: str, target_device: str = "cuda", **kwargs) -> 'ChatterboxTTS':
+    def from_local(cls, ckpt_dir: str, target_device: str = "cuda", 
+                   max_model_len: int = 1000, compile: bool = False,
+                   max_batch_size: int = 10,
+                   **kwargs) -> 'ChatterboxTTS':
         ckpt_dir = Path(ckpt_dir)
 
         t3_config = T3Config()
@@ -139,11 +105,25 @@ class ChatterboxTTS:
         t3_speech_pos_emb.load_state_dict({ k.replace('speech_pos_emb.', ''):v for k,v in t3_weights.items() if k.startswith('speech_pos_emb.') })
         t3_speech_pos_emb = t3_speech_pos_emb.to(device=target_device).eval()
 
+        total_gpu_memory = torch.cuda.get_device_properties(0).total_memory
+        unused_gpu_memory = total_gpu_memory - torch.cuda.memory_allocated()
+        
+        # Heuristic: rough calculation for what percentage of GPU memory to give to vLLM.
+        # Tune this until the 'Maximum concurrency for ___ tokens per request: ___x' is just over 1.
+        # This rough heuristic gives 1.55GB for the model weights plus 128KB per token.
+        vllm_memory_needed = (1.55*1024*1024*1024) + (max_batch_size * max_model_len * 1024 * 128)
+        vllm_memory_percent = vllm_memory_needed / unused_gpu_memory
+
+        print(f"Giving vLLM {vllm_memory_percent * 100:.2f}% of GPU memory ({vllm_memory_needed / 1024**2:.2f} MB)")
+
         t3 = LLM(
             model=f"./t3-model",
             task="generate",
             tokenizer="EnTokenizer",
             tokenizer_mode="custom",
+            max_model_len=max_model_len,
+            gpu_memory_utilization=vllm_memory_percent,
+            enforce_eager=not compile,
             **kwargs,
         )
 
@@ -159,7 +139,7 @@ class ChatterboxTTS:
         default_conds.to(device=target_device)
 
         return cls(
-            target_device=target_device,
+            target_device=target_device, max_model_len=max_model_len,
             t3=t3, t3_config=t3_config, t3_cond_enc=t3_enc, t3_speech_emb=t3_speech_emb, t3_speech_pos_emb=t3_speech_pos_emb,
             s3gen=s3gen, ve=ve, default_conds=default_conds,
         )
@@ -230,7 +210,7 @@ class ChatterboxTTS:
         audio_prompt_path: Optional[str] = None,
         exaggeration: float = 0.5,
         temperature: float = 0.8,
-        max_tokens=1000,
+        max_tokens=1000, # Capped at max_model_len
 
         # From original Chatterbox HF generation args
         top_p=0.8,
@@ -240,13 +220,13 @@ class ChatterboxTTS:
         *args, **kwargs,
     ) -> list[any]:
         s3gen_ref, cond_emb = self.get_audio_conditionals(audio_prompt_path)
-        cond_emb = self.update_exaggeration(cond_emb, exaggeration)
 
         return self.generate_with_conds(
             prompts=prompts,
             s3gen_ref=s3gen_ref,
             cond_emb=cond_emb,
             temperature=temperature,
+            exaggeration=exaggeration,
             max_tokens=max_tokens,
             top_p=top_p,
             repetition_penalty=repetition_penalty,
@@ -259,7 +239,8 @@ class ChatterboxTTS:
         s3gen_ref: dict[str, Any],
         cond_emb: torch.Tensor,
         temperature: float = 0.8,
-        max_tokens=1000,
+        exaggeration: float = 0.5,
+        max_tokens=1000, # Capped at max_model_len
 
         # From original Chatterbox HF generation args
         top_p=0.8,
@@ -270,6 +251,8 @@ class ChatterboxTTS:
     ) -> list[any]:
         if isinstance(prompts, str):
             prompts = [prompts]
+
+        cond_emb = self.update_exaggeration(cond_emb, exaggeration)
 
         # Norm and tokenize text
         prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
@@ -290,17 +273,11 @@ class ChatterboxTTS:
                     temperature=temperature,
 
                     stop_token_ids=[self.t3_config.stop_speech_token],
-                    max_tokens=max_tokens,
+                    max_tokens=min(max_tokens, self.max_model_len),
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
 
-                    *args,
-                    **kwargs,
-
-                    # HACK: I don't see a way to pass custom sampling params to vLLM.
-                    # We'll squirrel away CFG Scale in the 'frequency_penalty' field, and extract/reset/set it
-                    # when processing the logits.
-                    # frequency_penalty=cfg_weight,
+                    *args, **kwargs,
                 )
             )
             t3_gen_time = time.time() - start_time
@@ -324,4 +301,7 @@ class ChatterboxTTS:
             print(f"[S3Gen] Wavform Generation time: {s3gen_gen_time:.2f}s")
 
             return results
-
+        
+    def shutdown(self):
+        del self.t3
+        torch.cuda.empty_cache()

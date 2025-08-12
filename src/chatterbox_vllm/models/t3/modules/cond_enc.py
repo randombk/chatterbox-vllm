@@ -32,25 +32,7 @@ class T3Cond(nn.Module):
             elif k == 'emotion_adv' and len(v.shape) == 3:
                 # Remove batch dimension
                 v = v[0]
-            # setattr(self, k, v.to(device=v.device, dtype=torch.bfloat16))
-
-            # These should be bfloat16
-            # if k in ['speaker_emb', 'clap_emb', 'emotion_adv']:
-            #     v = v.to(device=v.device, dtype=torch.bfloat16)
-
             setattr(self, k, v)
-
-    def __iter__(self):
-        # HACK: we need to return a list of tensors, as that's how VLLM wants to pass in the conditionals.
-        # Everything will need to be encoded as a tensor.
-
-        return [
-            self.speaker_emb,
-            self.clap_emb,
-            self.cond_prompt_speech_tokens,
-            self.cond_prompt_speech_emb,
-            self.emotion_adv
-        ].__iter__()
 
     def save(self, fpath):
         torch.save(self.__dict__, fpath)

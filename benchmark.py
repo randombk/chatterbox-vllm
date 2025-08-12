@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 
-from typing import List
-import torchaudio as ta
-from chatterbox_vllm.tts import ChatterboxTTS
 import time
 import re
+from typing import List
+
 import torch
+import torchaudio as ta
+
+from chatterbox_vllm.tts import ChatterboxTTS
 
 AUDIO_PROMPT_PATH = "docs/audio-sample-03.mp3"
 TEXT_PATH = "docs/benchmark-text-1.txt"
 MAX_CHUNK_SIZE = 400 # characters
+
+# Process in batches of 40 chunks at a time.
+#   => There seems to be some memory management issue that prevents us from going much higher...
+# You may need to adjust the batch size based on your GPU memory.
+# This is needed because there are scaling elements that VLLM doesn't fully account for,
+# resulting in OOM errors caused by VLLM trying to run more parallel queries than it can handle.    
+BATCH_SIZE = 40
 
 
 # Given a line of text, split it into chunks of at most MAX_CHUNK_SIZE characters
@@ -64,22 +73,14 @@ if __name__ == "__main__":
     
     start_time = time.time()
     model = ChatterboxTTS.from_pretrained(
-        gpu_memory_utilization = 0.6,
+        max_batch_size = BATCH_SIZE,
         max_model_len = MAX_CHUNK_SIZE * 3, # Rough heuristic
-
-        # Disable CUDA graphs - it's causing tensors to get corrupted right now.
-        enforce_eager = True,
     )
     model_load_time = time.time()
     print(f"[BENCHMARK] Model loaded in {model_load_time - start_time} seconds")
 
-    # Process in batches of 40 chunks at a time.
-    #   => There seems to be some memory management issue that prevents us from going much higher...
-    # You may need to adjust the batch size based on your GPU memory.
-    # This is needed because there are scaling elements that VLLM doesn't fully account for,
-    # resulting in OOM errors caused by VLLM trying to run more parallel queries than it can handle.
     audios = []
-    batch_size = 40
+    batch_size = BATCH_SIZE
     for i in range(0, len(text), batch_size):
         audios.extend(
             model.generate(
@@ -98,3 +99,5 @@ if __name__ == "__main__":
     ta.save(f"benchmark.mp3", full_audio, model.sr)
     print(f"[BENCHMARK] Audio saved to benchmark.mp3")
     print(f"[BENCHMARK] Total time: {time.time() - start_time} seconds")
+
+    model.shutdown()
