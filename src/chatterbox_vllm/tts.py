@@ -102,7 +102,8 @@ class ChatterboxTTS:
     DEC_COND_LEN = 10 * S3GEN_SR
 
     def __init__(self, target_device: str,
-                 t3: LLM, t3_config: T3Config, t3_cond_enc: T3CondEnc, t3_speech_emb: torch.nn.Embedding, t3_speech_pos_emb: LearnedPositionEmbeddings,
+                 t3: LLM, t3_config: T3Config, t3_cond_enc: T3CondEnc, 
+                 t3_speech_emb: torch.nn.Embedding, t3_speech_pos_emb: LearnedPositionEmbeddings,
                  s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals):
         self.sr = S3GEN_SR  # sample rate of synthesized audio
         self.target_device = target_device
@@ -218,9 +219,10 @@ class ChatterboxTTS:
             return cond_emb
 
         new_cond_emb = cond_emb.clone()
-        new_cond_emb[-1] = self.t3_cond_enc.emotion_adv_fc(exaggeration * torch.ones(1, 1).to(self.target_device)).to('cpu')
+        new_cond_emb[-1] = self.t3_cond_enc.emotion_adv_fc(
+            (exaggeration * torch.ones(1, 1)).to(self.target_device)
+        ).to('cpu')
         return new_cond_emb
-
 
     def generate(
         self,
