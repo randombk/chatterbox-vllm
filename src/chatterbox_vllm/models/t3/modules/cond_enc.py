@@ -35,8 +35,8 @@ class T3Cond(nn.Module):
             # setattr(self, k, v.to(device=v.device, dtype=torch.bfloat16))
 
             # These should be bfloat16
-            if k in ['speaker_emb', 'clap_emb', 'emotion_adv']:
-                v = v.to(device=v.device, dtype=torch.bfloat16)
+            # if k in ['speaker_emb', 'clap_emb', 'emotion_adv']:
+            #     v = v.to(device=v.device, dtype=torch.bfloat16)
 
             setattr(self, k, v)
 

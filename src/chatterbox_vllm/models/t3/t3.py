@@ -109,19 +109,6 @@ class T3MultiModalProcessor(BaseMultiModalProcessor[T3ProcessingInfo]):
     ) -> Sequence[PromptUpdate]:
         # Bypassed via `apply` method.
         return []
-        # if mm_items.get_all_counts().get('conditionals', 0) == 0:
-        #     return []
-
-        # return [
-        #     # The final embedding will look like <| cond | text | speech |>
-        #     # This will prepare the cond portion.
-        #     PromptReplacement(
-        #         modality="conditionals",
-        #         target="[START]",
-        #         # replacement=["[START]"] * (mm_items.get_items('conditionals', ConditionalsEmbeddingItems).get_feature_size(0) + 1),
-        #         replacement=["[START]"] * 15,
-        #     )
-        # ]
 
     def _call_hf_processor(
         self,
@@ -239,15 +226,14 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         self.speech_emb = nn.Embedding(self.t3conf.speech_tokens_dict_size, self.dim)
 
         # custom position embedding
-        if self.t3conf.input_pos_emb == "learned":
-            max_text_seq_len = self.t3conf.max_text_tokens + 2
-            self.text_pos_emb = LearnedPositionEmbeddings(max_text_seq_len, self.dim)
+        max_text_seq_len = self.t3conf.max_text_tokens + 2
+        self.text_pos_emb = LearnedPositionEmbeddings(max_text_seq_len, self.dim)
 
-            max_mel_seq_len = self.t3conf.max_speech_tokens + 2 + 2
-            self.speech_pos_emb = LearnedPositionEmbeddings(max_mel_seq_len, self.dim)
+        max_mel_seq_len = self.t3conf.max_speech_tokens + 2 + 2
+        self.speech_pos_emb = LearnedPositionEmbeddings(max_mel_seq_len, self.dim)
 
         # logit projection
-        self.text_head = nn.Linear(self.dim, self.t3conf.text_tokens_dict_size, bias=False)
+        # self.text_head = nn.Linear(self.dim, self.t3conf.text_tokens_dict_size, bias=False)
         self.speech_head = ParallelLMHead(
             num_embeddings=self.t3conf.speech_tokens_dict_size,
             embedding_dim=self.dim,
@@ -280,8 +266,9 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             state_dicts[attr] = state_dict
 
         for attr, state_dict in state_dicts.items():
-            # print("Loading weights:", attr, state_dict.keys())
-            getattr(self, attr).load_state_dict(state_dict)
+            if hasattr(self, attr):
+                # print("Loading weights:", attr, state_dict.keys())
+                getattr(self, attr).load_state_dict(state_dict)
 
         llama_loaded_params = self.tfmr.load_weights(hf_llama_weights.items())
         loaded_params.update('tfmr.' + i for i in llama_loaded_params)
@@ -302,19 +289,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
                 result.append(torch.zeros(34, self.dim))
                 continue
 
-            speaker_emb, clap_emb, cond_prompt_speech_tokens, cond_prompt_speech_emb, emotion_adv = batch[0]
-            
-            if cond_prompt_speech_tokens.shape != (0,) and cond_prompt_speech_emb.shape == (0,):
-                cond_prompt_speech_emb = self.speech_emb(cond_prompt_speech_tokens)[0] + self.speech_pos_emb(cond_prompt_speech_tokens)
-            
-            t3_cond = T3Cond(
-                speaker_emb=speaker_emb,
-                clap_emb=clap_emb,
-                cond_prompt_speech_tokens=cond_prompt_speech_tokens,
-                cond_prompt_speech_emb=cond_prompt_speech_emb,
-                emotion_adv=emotion_adv
-            )
-            result.append(self.cond_enc(t3_cond))
+            result.append(batch[0])
         return result
 
 
