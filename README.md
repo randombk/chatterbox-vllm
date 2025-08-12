@@ -233,3 +233,12 @@ vLLM does not support CFG natively, so substantial hacks were needs to make it w
   <img src="https://github.com/randombk/chatterbox-vllm/raw/refs/heads/master/docs/vllm-cfg-impl.svg" alt="vLLM CFG Implementation" width="100%" />
   <p><em>vLLM CFG Implementation</em></p>
 </div>
+
+# Changelog
+
+## `0.1.0`:
+* Initial publication to pypi
+* Moved audio conditioning processing out of vLLM to avoid re-computing it for every request.
+
+## `0.0.1`:
+* Initial release
