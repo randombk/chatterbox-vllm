@@ -236,6 +236,13 @@ vLLM does not support CFG natively, so substantial hacks were needs to make it w
 
 # Changelog
 
+## `0.1.2`
+* Update to `vllm 0.10.0`
+* Fixed error where batched requests sometimes get truncated, or otherwise jumbled.
+  * This also removes the need to double-apply batching when submitting requests. You can submit as many prompts as you'd like into the `generate` function, and `vllm` should perform the batching internally without issue. See changes to `benchmark.py` for details.
+  * There is still a (very rare, theorical) possibility that this issue can still happen. If it does, submit a ticket with repro steps, and tweak your max batch size or max token count as a workaround.
+
+
 ## `0.1.1`
 * Misc minor cleanups
 * API changes:

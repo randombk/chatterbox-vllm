@@ -17,6 +17,7 @@ from chatterbox_vllm.models.t3.modules.t3_config import T3Config
 from .models.s3tokenizer import S3_SR, drop_invalid_tokens
 from .models.s3gen import S3GEN_SR, S3Gen
 from .models.voice_encoder import VoiceEncoder
+from .models.t3 import SPEECH_TOKEN_OFFSET
 from .models.t3.modules.cond_enc import T3Cond, T3CondEnc
 from .models.t3.modules.learned_pos_emb import LearnedPositionEmbeddings
 from .text_utils import punc_norm
@@ -272,7 +273,7 @@ class ChatterboxTTS:
                 sampling_params=SamplingParams(
                     temperature=temperature,
 
-                    stop_token_ids=[self.t3_config.stop_speech_token],
+                    stop_token_ids=[self.t3_config.stop_speech_token + SPEECH_TOKEN_OFFSET],
                     max_tokens=min(max_tokens, self.max_model_len),
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
@@ -283,12 +284,21 @@ class ChatterboxTTS:
             t3_gen_time = time.time() - start_time
             print(f"[T3] Speech Token Generation time: {t3_gen_time:.2f}s")
 
+            # run torch gc
+            torch.cuda.empty_cache()
+
             start_time = time.time()
             results = []
-            for i in range(len(batch_results)):
-                for j in range(len(batch_results[i].outputs)):
-                    speech_tokens = batch_results[i].outputs[j].token_ids
-                    speech_tokens = torch.tensor(speech_tokens, device="cuda")
+            for i, batch_result in enumerate(batch_results):
+                for output in batch_result.outputs:
+                    if i % 5 == 0:
+                        print(f"[S3] Processing prompt {i} of {len(batch_results)}")
+
+                    # Run gc every 10 prompts
+                    if i % 10 == 0:
+                        torch.cuda.empty_cache()
+
+                    speech_tokens = torch.tensor([token - SPEECH_TOKEN_OFFSET for token in output.token_ids], device="cuda")
                     speech_tokens = drop_invalid_tokens(speech_tokens)
                     speech_tokens = speech_tokens[speech_tokens < 6561]
 

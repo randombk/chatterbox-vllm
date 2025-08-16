@@ -1,4 +1,4 @@
-from .t3 import T3VllmModel
+from .t3 import T3VllmModel, SPEECH_TOKEN_OFFSET
 from vllm import ModelRegistry
 from vllm.transformers_utils.tokenizer_base import TokenizerRegistry
 

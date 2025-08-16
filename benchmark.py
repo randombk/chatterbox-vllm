@@ -13,11 +13,8 @@ AUDIO_PROMPT_PATH = "docs/audio-sample-03.mp3"
 TEXT_PATH = "docs/benchmark-text-1.txt"
 MAX_CHUNK_SIZE = 400 # characters
 
-# Process in batches of 40 chunks at a time.
-#   => There seems to be some memory management issue that prevents us from going much higher...
+# Process in batches of 40 chunks at a time. Tune this based on your GPU memory.
 # You may need to adjust the batch size based on your GPU memory.
-# This is needed because there are scaling elements that VLLM doesn't fully account for,
-# resulting in OOM errors caused by VLLM trying to run more parallel queries than it can handle.    
 BATCH_SIZE = 40
 
 
@@ -79,18 +76,14 @@ if __name__ == "__main__":
     model_load_time = time.time()
     print(f"[BENCHMARK] Model loaded in {model_load_time - start_time} seconds")
 
-    audios = []
-    batch_size = BATCH_SIZE
-    for i in range(0, len(text), batch_size):
-        audios.extend(
-            model.generate(
-                text[i:i+batch_size],
-                audio_prompt_path=AUDIO_PROMPT_PATH,
-                exaggeration=0.5,
+    audios = model.generate(
+        text,
+        audio_prompt_path=AUDIO_PROMPT_PATH,
+        exaggeration=0.5,
 
-                # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
-                min_p=0.1,
-            ))
+        # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
+        min_p=0.1,
+    )
     generation_time = time.time()
     print(f"[BENCHMARK] Generation completed in {generation_time - model_load_time} seconds")
 
