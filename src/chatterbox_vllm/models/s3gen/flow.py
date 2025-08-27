@@ -165,6 +165,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                  pre_lookahead_len: int = 3,
                  encoder: torch.nn.Module = None,
                  decoder: torch.nn.Module = None,
+                 use_fp16: bool = False,
                  decoder_conf: Dict = {'in_channels': 240, 'out_channel': 80, 'spk_emb_dim': 80, 'n_spks': 1,
                                        'cfm_params': DictConfig({'sigma_min': 1e-06, 'solver': 'euler', 't_scheduler': 'cosine',
                                                                  'training_cfg_rate': 0.2, 'inference_cfg_rate': 0.7, 'reg_loss_type': 'l1'}),
@@ -189,9 +190,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         self.only_mask_loss = only_mask_loss
         self.token_mel_ratio = token_mel_ratio
         self.pre_lookahead_len = pre_lookahead_len
-
-        # FIXME: this was missing - just putting it in as false
-        self.fp16 = False
+        self.fp16 = use_fp16
 
     @torch.inference_mode()
     def inference(self,

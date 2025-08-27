@@ -50,7 +50,7 @@ class S3Token2Mel(torch.nn.Module):
 
     TODO: make these modules configurable?
     """
-    def __init__(self):
+    def __init__(self, use_fp16: bool = False):
         super().__init__()
         self.tokenizer = S3Tokenizer("speech_tokenizer_v2_25hz")
         self.mel_extractor = mel_spectrogram # TODO: make it a torch module?
@@ -101,7 +101,8 @@ class S3Token2Mel(torch.nn.Module):
 
         self.flow = CausalMaskedDiffWithXvec(
             encoder=encoder,
-            decoder=decoder
+            decoder=decoder,
+            use_fp16=use_fp16,
         )
 
         self.resamplers = {}
@@ -230,8 +231,8 @@ class S3Token2Wav(S3Token2Mel):
     TODO: make these modules configurable?
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, use_fp16: bool = False):
+        super().__init__(use_fp16=use_fp16)
 
         f0_predictor = ConvRNNF0Predictor()
         self.mel2wav = HiFTGenerator(

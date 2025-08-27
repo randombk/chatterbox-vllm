@@ -86,6 +86,9 @@ class ChatterboxTTS:
     def from_local(cls, ckpt_dir: str, target_device: str = "cuda", 
                    max_model_len: int = 1000, compile: bool = False,
                    max_batch_size: int = 10,
+
+                   # Original Chatterbox defaults this to False. I don't see a substantial performance difference when running with FP16.
+                   s3gen_use_fp16: bool = False,
                    **kwargs) -> 'ChatterboxTTS':
         ckpt_dir = Path(ckpt_dir)
 
@@ -132,7 +135,7 @@ class ChatterboxTTS:
         ve.load_state_dict(load_file(ckpt_dir / "ve.safetensors"))
         ve = ve.to(device=target_device).eval()
 
-        s3gen = S3Gen()
+        s3gen = S3Gen(use_fp16=s3gen_use_fp16)
         s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
         s3gen = s3gen.to(device=target_device).eval()
 
