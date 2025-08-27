@@ -13,9 +13,12 @@ AUDIO_PROMPT_PATH = "docs/audio-sample-03.mp3"
 TEXT_PATH = "docs/benchmark-text-1.txt"
 MAX_CHUNK_SIZE = 400 # characters
 
-# Process in batches of 40 chunks at a time. Tune this based on your GPU memory.
+# Process in batches of X chunks at a time. Tune this based on your GPU memory.
+#   15 seems to work for 8GB VRAM
+#   40 seems to work for 16GB VRAM
+#   80 seems to work for 24GB VRAM
 # You may need to adjust the batch size based on your GPU memory.
-BATCH_SIZE = 40
+BATCH_SIZE = 80
 
 
 # Given a line of text, split it into chunks of at most MAX_CHUNK_SIZE characters
