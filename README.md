@@ -3,7 +3,7 @@
 This is a port of https://github.com/resemble-ai/chatterbox to vLLM. Why?
 
 * Improved performance and more efficient use of GPU memory.
-  * Early benchmarks show ~4x speedup in generation toks/s without batching, and over 10x with batching. This is a significant improvement over the original Chatterbox implementation, which was bottlenecked by unnecessary CPU-GPU sync/transfers within the HF transformers implementation.
+  * Early benchmarks show ~4x speedup in generation tokens/s without batching, and over 10x with batching. This is a significant improvement over the original Chatterbox implementation, which was bottlenecked by unnecessary CPU-GPU sync/transfers within the HF transformers implementation.
   * More rigorous benchmarking is WIP, but will likely come after batching is fully fleshed out.
 * Easier integration with state-of-the-art inference infrastructure.
 
@@ -36,7 +36,7 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 * ✅ Exaggeration control is implemented.
 * ✅ vLLM batching is implemented and produces a significant speedup.
 * ℹ️ Project uses vLLM internal APIs and extremely hacky workarounds to get things done.
-  * Refactoring to the idomatic vLLM way of doing things is WIP, but will require some changes to vLLM.
+  * Refactoring to the idiomatic vLLM way of doing things is WIP, but will require some changes to vLLM.
   * Until then, this is a Rube Goldberg machine that will likely only work with vLLM 0.9.2.
   * Follow https://github.com/vllm-project/vllm/issues/21989 for updates.
 * ℹ️ Substantial refactoring is needed to further clean up unnecessary workarounds and code paths.
@@ -97,12 +97,12 @@ To run a benchmark, tweak and run `benchmark.py`.
 The following results were obtained with batching on a 6.6k-word input (`docs/benchmark-text-1.txt`), generating ~40min of audio.
 
 Notes:
- * I'm not _entirely_ sure what the toks/s figures from vLLM are showing - the figures probably aren't directly comparable to others, but the results speak for themselves.
+ * I'm not _entirely_ sure what the tokens/s figures from vLLM are showing - the figures probably aren't directly comparable to others, but the results speak for themselves.
  * With vLLM, **the T3 model is no longer the bottleneck**
    * Vast majority of time is now spent on the S3Gen model, which is not ported/portable to vLLM. This currently uses the original reference implementation from the Chatterbox repo, so there's potential for integrating some of the other community optimizations here.
    * This also means the vLLM section of the model never fully ramps to its peak throughput in these benchmarks.
  * Benchmarks are done without CUDA graphs, as that is currently causing correctness issues.
- * There's some issues with my very rudimentary chunking logic, which is causing some occasional artifacts in output quality.
+ * There are some issues with my very rudimentary chunking logic, which is causing some occasional artifacts in output quality.
 
 ## Run 1: RTX 3090
 
@@ -226,7 +226,7 @@ I could not find an official explanation of the Chatterbox architecture, so belo
 
 ## CFG Implementation Details
 
-vLLM does not support CFG natively, so substantial hacks were needs to make it work. At a high level, we trick vLLM into thinking the model has double the hidden dimension size as it actually does, then splitting and restacking the states to invoke Llama with double the original batch size. This does pose a risk that vLLM will underestimate the memory requirements of the model - more research is needed into whether vLLM's initial profiling pass will capture this nuance.
+vLLM does not support CFG natively, so substantial hacks were needed to make it work. At a high level, we trick vLLM into thinking the model has double the hidden dimension size as it actually does, then splitting and restacking the states to invoke Llama with double the original batch size. This does pose a risk that vLLM will underestimate the memory requirements of the model - more research is needed into whether vLLM's initial profiling pass will capture this nuance.
 
 
 <div align="center">
@@ -243,7 +243,7 @@ vLLM does not support CFG natively, so substantial hacks were needs to make it w
 * Update to `vllm 0.10.0`
 * Fixed error where batched requests sometimes get truncated, or otherwise jumbled.
   * This also removes the need to double-apply batching when submitting requests. You can submit as many prompts as you'd like into the `generate` function, and `vllm` should perform the batching internally without issue. See changes to `benchmark.py` for details.
-  * There is still a (very rare, theorical) possibility that this issue can still happen. If it does, submit a ticket with repro steps, and tweak your max batch size or max token count as a workaround.
+  * There is still a (very rare, theoretical) possibility that this issue can still happen. If it does, submit a ticket with repro steps, and tweak your max batch size or max token count as a workaround.
 
 
 ## `0.1.1`
