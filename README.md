@@ -236,6 +236,9 @@ vLLM does not support CFG natively, so substantial hacks were needs to make it w
 
 # Changelog
 
+## `0.1.3`
+* Added ability to tweak S3Gen diffusion steps, and default it to 5 (originally 10). This improves performance with nearly indistinguishable quality loss.
+
 ## `0.1.2`
 * Update to `vllm 0.10.0`
 * Fixed error where batched requests sometimes get truncated, or otherwise jumbled.

@@ -243,6 +243,11 @@ class ChatterboxTTS:
         exaggeration: float = 0.5,
         max_tokens=1000, # Capped at max_model_len
 
+        # Number of diffusion steps to use for S3Gen
+        # The original Chatterbox uses 10, but we found that 5 is enough for good quality audio.
+        # This can be as low as 2 or 3 for faster generation, though the audio quality will degrade.
+        diffusion_steps: int = 5,
+
         # From original Chatterbox HF generation args
         top_p=0.8,
         repetition_penalty=2.0,
@@ -305,6 +310,7 @@ class ChatterboxTTS:
                     wav, _ = self.s3gen.inference(
                         speech_tokens=speech_tokens,
                         ref_dict=s3gen_ref,
+                        n_timesteps=diffusion_steps,
                     )
                     results.append(wav.cpu())
             s3gen_gen_time = time.time() - start_time

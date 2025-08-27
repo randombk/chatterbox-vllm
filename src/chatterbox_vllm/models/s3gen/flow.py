@@ -202,7 +202,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                   prompt_feat,
                   prompt_feat_len,
                   embedding,
-                  finalize):
+                  finalize,
+                  n_timesteps: int):
         embedding = embedding.to(self.spk_embed_affine_layer.weight.dtype)
         prompt_feat = prompt_feat.to(self.spk_embed_affine_layer.weight.dtype)
 
@@ -234,7 +235,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             mask=mask.unsqueeze(1),
             spks=embedding,
             cond=conds,
-            n_timesteps=10
+            n_timesteps=n_timesteps,
         )
         feat = feat[:, :, mel_len1:]
         assert feat.shape[2] == mel_len2

@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+dev/
 .venv/
 .pytest_cache/
 .coverage
@@ -32,6 +33,7 @@ htmlcov/
 # Test files
 *.mp3
 *.wav
+trace.json
 
 # OS
 .DS_Store
