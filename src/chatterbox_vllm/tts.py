@@ -83,7 +83,7 @@ class ChatterboxTTS:
         return S3GEN_SR
 
     @classmethod
-    def from_local(cls, ckpt_dir: str, target_device: str = "cuda", 
+    def from_local(cls, ckpt_dir: str | Path, target_device: str = "cuda", 
                    max_model_len: int = 1000, compile: bool = False,
                    max_batch_size: int = 10,
 
@@ -120,16 +120,17 @@ class ChatterboxTTS:
 
         print(f"Giving vLLM {vllm_memory_percent * 100:.2f}% of GPU memory ({vllm_memory_needed / 1024**2:.2f} MB)")
 
-        t3 = LLM(
-            model=f"./t3-model",
-            task="generate",
-            tokenizer="EnTokenizer",
-            tokenizer_mode="custom",
-            max_model_len=max_model_len,
-            gpu_memory_utilization=vllm_memory_percent,
-            enforce_eager=not compile,
-            **kwargs,
-        )
+        base_vllm_kwargs = {
+            "model": "./t3-model",
+            "task": "generate",
+            "tokenizer": "EnTokenizer",
+            "tokenizer_mode": "custom",
+            "gpu_memory_utilization": vllm_memory_percent,
+            "enforce_eager": not compile,
+            "max_model_len": max_model_len,
+        }
+
+        t3 = LLM(**{**base_vllm_kwargs, **kwargs})
 
         ve = VoiceEncoder()
         ve.load_state_dict(load_file(ckpt_dir / "ve.safetensors"))
