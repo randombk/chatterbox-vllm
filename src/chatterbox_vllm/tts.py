@@ -248,9 +248,9 @@ class ChatterboxTTS:
         max_tokens=1000, # Capped at max_model_len
 
         # Number of diffusion steps to use for S3Gen
-        # The original Chatterbox uses 10, but we found that 5 is enough for good quality audio.
-        # This can be as low as 2 or 3 for faster generation, though the audio quality will degrade.
-        diffusion_steps: int = 5,
+        # The original Chatterbox uses 10. 5 is often enough for good quality audio, though some quality loss can be detected.
+        # This can be as low as 2 or 3 for faster generation, though the audio quality will degrade substantially.
+        diffusion_steps: int = 10,
 
         # From original Chatterbox HF generation args
         top_p=0.8,

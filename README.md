@@ -229,6 +229,12 @@ vLLM does not support CFG natively, so substantial hacks were needed to make it 
 
 # Changelog
 
+## `0.1.4`
+* Change default step count back to 10 due to feedback about quality degradation.
+* Fixed a bug in the `gradio_tts_app.py` implementation (#13).
+* Fixed a bug with how symlinks don't work if the module is installed normally (vs as a dev environment) (#12).
+  * The whole structure of how this project should be integrated into downstream repos is something that needs rethinking.
+
 ## `0.1.3`
 * Added ability to tweak S3Gen diffusion steps, and default it to 5 (originally 10). This improves performance with nearly indistinguishable quality loss.
 
