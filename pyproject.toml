@@ -36,6 +36,9 @@ dev = ["build", "twine"]
 [tool.setuptools.dynamic]
 version = { file = ".latest-version.generated.txt" }
 
+[tool.setuptools.package-data]
+chatterbox_vllm = ["models/t3/*.json", "models/*/t3/*.json"]
+
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"

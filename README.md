@@ -47,6 +47,8 @@ DISCLAIMER: THIS IS A PERSONAL PROJECT and is not affiliated with my employer or
 
 # Installation
 
+This project only supports Linux and WSL2 with Nvidia hardware. AMD _may_ work with minor tweaks, but is not tested.
+
 Prerequisites: `git` and [`uv`](https://pypi.org/project/uv/) must be installed
 
 ```
@@ -228,6 +230,9 @@ vLLM does not support CFG natively, so substantial hacks were needed to make it 
 </div>
 
 # Changelog
+
+## `0.1.5`
+* Fix Python packaging missing the tokenizer.json file
 
 ## `0.1.4`
 * Change default step count back to 10 due to feedback about quality degradation.
