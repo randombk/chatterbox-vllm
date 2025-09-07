@@ -97,6 +97,7 @@ if __name__ == "__main__":
 
 An early version of Multilingual support is available (see [this example](https://github.com/randombk/chatterbox-vllm/blob/master/example-tts-multilingual.py)). However there *are* quality degradations compared to the original model, driven by:
 * Alignment Stream Analyzer is not implemented, which can result in errors, repetitions, and extra noise at the end of the audio snippet.
+* The lack of learned speech positional encodings is also much more noticible.
 * Chinese (cn) segmentation is skipped, pending https://github.com/lancopku/pkuseg-python/issues/180.
 
 For the list of supported languages, see [here](https://github.com/resemble-ai/chatterbox?tab=readme-ov-file#supported-languages).

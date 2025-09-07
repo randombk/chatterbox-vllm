@@ -610,6 +610,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         inputs_embeds: Optional[torch.Tensor] = None,  # The actual inputs to the model
         **kwargs: object,
     ) -> torch.Tensor:
+        # print("t3 ###")
         # print("t3/inputs_embeds", inputs_embeds.shape, inputs_embeds.dtype)
         # print("t3/positions", positions.shape, positions.dtype)
 
@@ -623,8 +624,8 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
 
         # Split the inputs_embeds into the three parts
         cond_embeds, uncond_embeds = inputs_embeds.split([self.dim, self.dim], dim=1)
-        # print("t3/embeds", embeds.shape, embeds.dtype)
-        # print("t3/cfg_embeds", cfg_embeds.shape, cfg_embeds.dtype)
+        # print("t3/cond_embeds", cond_embeds.shape, cond_embeds.dtype)
+        # print("t3/uncond_embeds", uncond_embeds.shape, uncond_embeds.dtype)
 
         # TODO: Apply speech positional embeddings here
 
