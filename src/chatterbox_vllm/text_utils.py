@@ -1,3 +1,4 @@
+
 def punc_norm(text: str) -> str:
     """
         Quick cleanup func for punctuation from LLMs or
@@ -23,18 +24,45 @@ def punc_norm(text: str) -> str:
         ("—", "-"),
         ("–", "-"),
         (" ,", ","),
-        (""", "\""),
-        (""", "\""),
-        ("'", "'"),
-        ("'", "'"),
+        ("“", "\""),
+        ("”", "\""),
+        ("‘", "'"),
+        ("’", "'"),
     ]
     for old_char_sequence, new_char in punc_to_replace:
         text = text.replace(old_char_sequence, new_char)
 
     # Add full stop if no ending punc
     text = text.rstrip(" ")
-    sentence_enders = {".", "!", "?", "-", ","}
+    sentence_enders = {".", "!", "?", "-", ",","、","，","。","？","！"}
     if not any(text.endswith(p) for p in sentence_enders):
         text += "."
 
     return text
+
+# Supported languages for the multilingual model
+SUPPORTED_LANGUAGES = {
+  "ar": "Arabic",
+  "da": "Danish",
+  "de": "German",
+  "el": "Greek",
+  "en": "English",
+  "es": "Spanish",
+  "fi": "Finnish",
+  "fr": "French",
+  "he": "Hebrew",
+  "hi": "Hindi",
+  "it": "Italian",
+  "ja": "Japanese",
+  "ko": "Korean",
+  "ms": "Malay",
+  "nl": "Dutch",
+  "no": "Norwegian",
+  "pl": "Polish",
+  "pt": "Portuguese",
+  "ru": "Russian",
+  "sv": "Swedish",
+  "sw": "Swahili",
+  "tr": "Turkish",
+  "zh": "Chinese",
+}

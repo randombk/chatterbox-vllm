@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class EnTokenizer(PreTrainedTokenizer):
     """
-    A VLLM-compatible tokenizer that wraps the original Tokenizer implementation.
+    A VLLM-compatible tokenizer that wraps the original EnTokenizer implementation.
     """
     model_input_names = ["input_ids", "attention_mask"]
     

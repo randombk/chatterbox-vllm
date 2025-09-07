@@ -1,8 +1,11 @@
 class T3Config:
     start_text_token = 255
     stop_text_token = 0
-    text_tokens_dict_size = 704
     max_text_tokens = 2048
+
+    # HACK: We're hard-coding this into t3.py for now
+    # text_tokens_dict_size_english = 704
+    # text_tokens_dict_size_multilingual = 2352
 
     start_speech_token = 6561
     stop_speech_token = 6562

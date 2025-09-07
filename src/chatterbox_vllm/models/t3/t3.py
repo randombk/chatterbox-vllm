@@ -46,7 +46,7 @@ CONDITIONING_SIZE = 34 # 1 for speaker_emb, 0 for clap_emb, 32 for cond_prompt_s
 # normal speech tokens. This way, any token < SPEECH_TOKEN_OFFSET is a prefill token, and any token
 # >= SPEECH_TOKEN_OFFSET is a decode token. This will only affect the logits and the encoding logic.
 # No effect on the hidden states or the actual Llama model itself.
-SPEECH_TOKEN_OFFSET = 1000
+SPEECH_TOKEN_OFFSET = 2500
 
 
 class T3ProcessingInfo(BaseProcessingInfo):
@@ -267,11 +267,13 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # Initialize LLaMA backbone
         self.tfmr = LlamaModel(vllm_config=vllm_config, prefix=prefix + ".tfmr")
 
+        text_tokens_dict_size = 704 if self.cfg.tokenizer == "EnTokenizer" else 2352
+
         # Initialize custom components
         self.t3conf = T3Config()
         self.dim = self.t3conf.n_channels
         self.cond_enc = T3CondEnc(self.t3conf)
-        self.text_emb = nn.Embedding(self.t3conf.text_tokens_dict_size, self.dim)
+        self.text_emb = nn.Embedding(text_tokens_dict_size, self.dim)
         self.speech_emb = nn.Embedding(self.t3conf.speech_tokens_dict_size, self.dim)
 
         # custom position embedding
@@ -282,7 +284,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         self.speech_pos_emb = LearnedPositionEmbeddings(max_mel_seq_len, self.dim)
 
         # logit projection
-        # self.text_head = nn.Linear(self.dim, self.t3conf.text_tokens_dict_size, bias=False)
+        # self.text_head = nn.Linear(self.dim, text_tokens_dict_size, bias=False)
         self.speech_head = ParallelLMHead(
             num_embeddings=self.t3conf.speech_tokens_dict_size,
             embedding_dim=self.dim,

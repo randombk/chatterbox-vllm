@@ -41,3 +41,4 @@ Thumbs.db
 
 # Automatically regenerated
 t3-model/model.safetensors
+t3-model-multilingual/model.safetensors
