@@ -259,6 +259,7 @@ class ChatterboxTTS:
             s3gen_ref=s3gen_ref,
             cond_emb=cond_emb,
             temperature=temperature,
+            language_id=language_id,
             exaggeration=exaggeration,
             max_tokens=max_tokens,
             top_p=top_p,
@@ -282,7 +283,8 @@ class ChatterboxTTS:
         diffusion_steps: int = 10,
 
         # From original Chatterbox HF generation args
-        top_p=0.8,
+        top_p=1.0,
+        min_p=0.05,
         repetition_penalty=2.0,
 
         # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
@@ -308,7 +310,7 @@ class ChatterboxTTS:
         if self.variant == "multilingual":
             # Use angle brackets to avoid conflicts with other start/stop tokens.
             # This will be parsed and replaced in the tokenizer.
-            prompts = [f"<{language_id.lower()}?{p}" for p in prompts]
+            prompts = [f"<{language_id.lower()}>{p}" for p in prompts]
 
         with torch.inference_mode():
             start_time = time.time()

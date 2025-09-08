@@ -207,13 +207,31 @@ class MTLTokenizer(PreTrainedTokenizer):
         assert SOT in voc
         assert EOT in voc
 
-    def get_vocab_size(self) -> int:
-        return len(self.tokenizer.get_vocab())
-
     def get_vocab(self):
         return self.tokenizer.get_vocab()
 
-    def _tokenize(self, text: str, **kwargs) -> List[str]:
+    def _tokenize(self, text: str, **kwargs) -> List[str]:        
+        # Parse out language token if it exists
+        # This is injected by the ChatterboxTTS.generate_with_conds method
+        language_id = None
+        if text.startswith('<'):
+            language_id = text.split('<')[1].split('>')[0]
+            text = text.split('>')[1]
+        
+        # Language-specific text processing
+        if language_id == 'zh':
+            text = self.cangjie_converter(text)
+        elif language_id == 'ja':
+            text = hiragana_normalize(text)
+        elif language_id == 'he':
+            text = add_hebrew_diacritics(text)
+        elif language_id == 'ko':
+            text = korean_normalize(text)
+        
+        # Prepend language token again
+        if language_id:
+            text = f"[{language_id.lower()}]{text}"
+        
         text = text.replace(' ', SPACE)
         return self.tokenizer.encode(text).tokens
 
@@ -231,48 +249,10 @@ class MTLTokenizer(PreTrainedTokenizer):
         text = text.replace(UNK, '')
         return text
 
-    def text_to_tokens(self, text: str, language_id: str = None):
-        text_tokens = self.encode(text, language_id=language_id)
-        text_tokens = torch.IntTensor(text_tokens).unsqueeze(0)
-        return text_tokens
-
-    def encode(self, txt: str, return_tensors: Optional[str] = None):
-        # Parse out language token if it exists
-        # This is injected by the ChatterboxTTS.generate_with_conds method
-        language_id = None
-        if txt.startswith('<'):
-            language_id = txt.split('<')[1].split('>')[0]
-            txt = txt.split('>')[1]
-        
-        # Language-specific text processing
-        if language_id == 'zh':
-            txt = self.cangjie_converter(txt)
-        elif language_id == 'ja':
-            txt = hiragana_normalize(txt)
-        elif language_id == 'he':
-            txt = add_hebrew_diacritics(txt)
-        elif language_id == 'ko':
-            txt = korean_normalize(txt)
-        
-        # Prepend language token again
-        if language_id:
-            txt = f"[{language_id.lower()}]{txt}"
-        
-        txt = txt.replace(' ', SPACE)
-        code = self.tokenizer.encode(txt)
-        ids = code.ids
-        if return_tensors == "pt":
-            return torch.IntTensor(ids).unsqueeze(0)
-        return ids
-
-    def decode(self, seq):
-        if isinstance(seq, torch.Tensor):
-            seq = seq.cpu().numpy()
-
-        txt = self.tokenizer.decode(seq, skip_special_tokens=False)
-        txt = txt.replace(' ', '').replace(SPACE, ' ').replace(EOT, '').replace(UNK, '')
-        return txt
-
+    @property
+    def vocab_size(self) -> int:
+        return self.tokenizer.get_vocab_size()
+    
     @property
     def max_token_id(self) -> int:
         return max(self.tokenizer.get_vocab().values())
