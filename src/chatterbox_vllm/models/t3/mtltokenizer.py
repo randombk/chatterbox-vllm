@@ -3,6 +3,7 @@ import os
 from typing import List, Optional, Union
 from pathlib import Path
 import json
+from unicodedata import category
 
 import torch
 from tokenizers import Tokenizer

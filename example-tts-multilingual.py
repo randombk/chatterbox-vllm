@@ -18,6 +18,10 @@ if __name__ == "__main__":
         ("de", "docs/de_f1.flac", [
             "Letzten Monat haben wir einen neuen Meilenstein erreicht: zwei Milliarden Aufrufe auf unserem YouTube-Kanal.",
         ]),
+        ("zh", "docs/zh_m1.mp3", [
+            "你好，很高兴见到你。",
+            "上个月，我们达到了一个新的里程碑. 我们的YouTube频道观看次数达到了二十亿次，这绝对令人难以置信。",
+        ]),
     ]:   
         audios = model.generate(prompts, audio_prompt_path=audio_prompt_path, exaggeration=0.5, language_id=language_id)
         for audio_idx, audio in enumerate(audios):
