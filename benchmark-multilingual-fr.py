@@ -9,8 +9,8 @@ import torchaudio as ta
 
 from chatterbox_vllm.tts import ChatterboxTTS
 
-AUDIO_PROMPT_PATH = "docs/audio-sample-03.mp3"
-TEXT_PATH = "docs/benchmark-text-1.txt"
+AUDIO_PROMPT_PATH = "docs/fr_f1.flac"
+TEXT_PATH = "docs/benchmark-text-fr-1.txt"
 MAX_CHUNK_SIZE = 400 # characters
 
 # Process in batches of X chunks at a time. Tune this based on your GPU memory.
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     print(f"[BENCHMARK] Text chunked into {len(text)} chunks")
     
     start_time = time.time()
-    model = ChatterboxTTS.from_pretrained(
+    model = ChatterboxTTS.from_pretrained_multilingual(
         max_batch_size = BATCH_SIZE,
         max_model_len = MAX_CHUNK_SIZE * 3, # Rough heuristic
     )
@@ -82,6 +82,7 @@ if __name__ == "__main__":
     audios = model.generate(
         text,
         audio_prompt_path=AUDIO_PROMPT_PATH,
+        language_id="fr",
         exaggeration=0.5,
 
         # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
@@ -93,8 +94,8 @@ if __name__ == "__main__":
 
     # Stitch audio chunks together
     full_audio = torch.cat(audios, dim=-1)
-    ta.save(f"benchmark.mp3", full_audio, model.sr)
-    print(f"[BENCHMARK] Audio saved to benchmark.mp3")
+    ta.save(f"benchmark-fr.mp3", full_audio, model.sr)
+    print(f"[BENCHMARK] Audio saved to benchmark-fr.mp3")
     print(f"[BENCHMARK] Total time: {time.time() - start_time} seconds")
 
     model.shutdown()

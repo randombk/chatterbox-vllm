@@ -28,6 +28,8 @@ dependencies = [
     "llvmlite>=0.44.0",
     "vllm==0.10.0",
     "gradio",
+    #"pkuseg",  # https://github.com/lancopku/pkuseg-python/issues/180
+    "pykakasi",
 ]
 
 [project.optional-dependencies]

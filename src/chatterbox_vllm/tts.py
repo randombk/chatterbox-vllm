@@ -20,7 +20,7 @@ from .models.voice_encoder import VoiceEncoder
 from .models.t3 import SPEECH_TOKEN_OFFSET
 from .models.t3.modules.cond_enc import T3Cond, T3CondEnc
 from .models.t3.modules.learned_pos_emb import LearnedPositionEmbeddings
-from .text_utils import punc_norm
+from .text_utils import punc_norm, SUPPORTED_LANGUAGES
 
 REPO_ID = "ResembleAI/chatterbox"
 
@@ -64,7 +64,8 @@ class ChatterboxTTS:
     def __init__(self, target_device: str, max_model_len: int,
                  t3: LLM, t3_config: T3Config, t3_cond_enc: T3CondEnc, 
                  t3_speech_emb: torch.nn.Embedding, t3_speech_pos_emb: LearnedPositionEmbeddings,
-                 s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals):
+                 s3gen: S3Gen, ve: VoiceEncoder, default_conds: Conditionals,
+                 variant: str = "english"):
         self.target_device = target_device
         self.max_model_len = max_model_len
         self.t3 = t3
@@ -76,6 +77,7 @@ class ChatterboxTTS:
         self.s3gen = s3gen
         self.ve = ve
         self.default_conds = default_conds
+        self.variant = variant
 
     @property
     def sr(self) -> int:
@@ -86,6 +88,7 @@ class ChatterboxTTS:
     def from_local(cls, ckpt_dir: str | Path, target_device: str = "cuda", 
                    max_model_len: int = 1000, compile: bool = False,
                    max_batch_size: int = 10,
+                   variant: str = "english",
 
                    # Original Chatterbox defaults this to False. I don't see a substantial performance difference when running with FP16.
                    s3gen_use_fp16: bool = False,
@@ -95,7 +98,7 @@ class ChatterboxTTS:
         t3_config = T3Config()
 
         # Load *just* the necessary weights to perform inference with T3CondEnc
-        t3_weights = load_file(ckpt_dir / "t3_cfg.safetensors")
+        t3_weights = load_file(ckpt_dir / ("t3_cfg.safetensors" if variant == "english" else "t3_23lang.safetensors"))
 
         t3_enc = T3CondEnc(t3_config)
         t3_enc.load_state_dict({ k.replace('cond_enc.', ''):v for k,v in t3_weights.items() if k.startswith('cond_enc.') })
@@ -121,9 +124,9 @@ class ChatterboxTTS:
         print(f"Giving vLLM {vllm_memory_percent * 100:.2f}% of GPU memory ({vllm_memory_needed / 1024**2:.2f} MB)")
 
         base_vllm_kwargs = {
-            "model": "./t3-model",
+            "model": "./t3-model" if variant == "english" else "./t3-model-multilingual",
             "task": "generate",
-            "tokenizer": "EnTokenizer",
+            "tokenizer": "EnTokenizer" if variant == "english" else "MtlTokenizer",
             "tokenizer_mode": "custom",
             "gpu_memory_utilization": vllm_memory_percent,
             "enforce_eager": not compile,
@@ -147,6 +150,7 @@ class ChatterboxTTS:
             target_device=target_device, max_model_len=max_model_len,
             t3=t3, t3_config=t3_config, t3_cond_enc=t3_enc, t3_speech_emb=t3_speech_emb, t3_speech_pos_emb=t3_speech_pos_emb,
             s3gen=s3gen, ve=ve, default_conds=default_conds,
+            variant=variant,
         )
 
     @classmethod
@@ -163,7 +167,30 @@ class ChatterboxTTS:
         model_safetensors_path.unlink(missing_ok=True)
         model_safetensors_path.symlink_to(t3_cfg_path)
 
-        return cls.from_local(Path(local_path).parent, *args, **kwargs)
+        return cls.from_local(Path(local_path).parent, variant="english", *args, **kwargs)
+
+    @classmethod
+    def from_pretrained_multilingual(cls,
+                                    repo_id: str = REPO_ID,
+                                    revision: str = "c819eeccdf99310da26bca3bc5ace120db93471a",
+                                    *args, **kwargs) -> 'ChatterboxTTS':
+        for fpath in ["ve.safetensors", "t3_23lang.safetensors", "s3gen.safetensors", "mtl_tokenizer.json", "conds.pt", "Cangjie5_TC.json"]:
+            local_path = hf_hub_download(repo_id=repo_id, filename=fpath, revision=revision)
+
+        # Ensure the symlink in './t3-model-multilingual/model.safetensors' points to t3_cfg_path
+        t3_cfg_path = Path(local_path).parent / "t3_23lang.safetensors"
+        model_safetensors_path = Path.cwd() / "t3-model-multilingual" / "model.safetensors"
+        model_safetensors_path.unlink(missing_ok=True)
+        model_safetensors_path.symlink_to(t3_cfg_path)
+
+        return cls.from_local(Path(local_path).parent, variant="multilingual", *args, **kwargs)
+    
+    def get_supported_languages(self) -> dict[str, str]:
+        """Return dictionary of supported language codes and names."""
+        if self.variant == "multilingual":
+            return SUPPORTED_LANGUAGES.copy()
+        else:
+            return { "en": "English" }
 
     @lru_cache(maxsize=10)
     def get_audio_conditionals(self, wav_fpath: Optional[str] = None) -> Tuple[dict[str, Any], torch.Tensor]:
@@ -213,6 +240,7 @@ class ChatterboxTTS:
         self,
         prompts: Union[str, list[str]],
         audio_prompt_path: Optional[str] = None,
+        language_id: Optional[str] = 'en',
         exaggeration: float = 0.5,
         temperature: float = 0.8,
         max_tokens=1000, # Capped at max_model_len
@@ -231,6 +259,7 @@ class ChatterboxTTS:
             s3gen_ref=s3gen_ref,
             cond_emb=cond_emb,
             temperature=temperature,
+            language_id=language_id,
             exaggeration=exaggeration,
             max_tokens=max_tokens,
             top_p=top_p,
@@ -243,6 +272,7 @@ class ChatterboxTTS:
         prompts: Union[str, list[str]],
         s3gen_ref: dict[str, Any],
         cond_emb: torch.Tensor,
+        language_id: Optional[str] = 'en',
         temperature: float = 0.8,
         exaggeration: float = 0.5,
         max_tokens=1000, # Capped at max_model_len
@@ -253,7 +283,8 @@ class ChatterboxTTS:
         diffusion_steps: int = 10,
 
         # From original Chatterbox HF generation args
-        top_p=0.8,
+        top_p=1.0,
+        min_p=0.05,
         repetition_penalty=2.0,
 
         # Supports anything in https://docs.vllm.ai/en/v0.9.2/api/vllm/index.html?h=samplingparams#vllm.SamplingParams
@@ -262,10 +293,24 @@ class ChatterboxTTS:
         if isinstance(prompts, str):
             prompts = [prompts]
 
+        # Validate language_id
+        if language_id and language_id.lower() not in self.get_supported_languages():
+            supported_langs = ", ".join(self.get_supported_languages().keys())
+            raise ValueError(
+                f"Unsupported language_id '{language_id}'. "
+                f"Supported languages: {supported_langs}"
+            )
+
         cond_emb = self.update_exaggeration(cond_emb, exaggeration)
 
         # Norm and tokenize text
         prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
+
+        # For multilingual, prepend the language token
+        if self.variant == "multilingual":
+            # Use angle brackets to avoid conflicts with other start/stop tokens.
+            # This will be parsed and replaced in the tokenizer.
+            prompts = [f"<{language_id.lower()}>{p}" for p in prompts]
 
         with torch.inference_mode():
             start_time = time.time()
