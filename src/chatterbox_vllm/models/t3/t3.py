@@ -429,6 +429,13 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         if multimodal_embeddings is None or len(multimodal_embeddings) == 0:
             # There's no multimodal embeddings, so we're decoding.
             # Remember to undo the offset we applied to the speech tokens.
+
+            # if torch.min(input_ids) < SPEECH_TOKEN_OFFSET:
+            #     print("input_ids", input_ids)
+            #     print("torch.min(input_ids)", torch.min(input_ids))
+            #     print("SPEECH_TOKEN_OFFSET", SPEECH_TOKEN_OFFSET)
+            #     raise ValueError("input_ids is less than SPEECH_TOKEN_OFFSET")
+
             embeds = self.speech_emb(input_ids - SPEECH_TOKEN_OFFSET)
 
             out = torch.cat([embeds, embeds], dim=1)
@@ -598,7 +605,10 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         # HACK: Offset the logits so the resulting speech token is +SPEECH_TOKEN_OFFSET from the normal speech tokens.
         #       We'll do this by adding SPEECH_TOKEN_OFFSET fake dimensions to the left of the logits.
         #       This is a hack to help us unbatch batched inputs.
-        logits = torch.cat([torch.zeros(logits.shape[0], SPEECH_TOKEN_OFFSET).to(logits.device), logits], dim=1)
+        logits = torch.cat([
+            torch.zeros(logits.shape[0], SPEECH_TOKEN_OFFSET).to(logits.device).fill_(float('-inf')),
+            logits,
+        ], dim=1)
         return logits
 
 
