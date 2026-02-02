@@ -34,8 +34,13 @@ from .decoder import ConditionalDecoder
 
 
 def drop_invalid_tokens(x):
-    assert len(x.shape) <= 2 and x.shape[0] == 1, "only batch size of one allowed for now"
-    return x[x < SPEECH_VOCAB_SIZE]
+    # Support batching - process each sequence in the batch
+    if len(x.shape) == 2:
+        # Batch processing: filter each sequence independently
+        return [seq[seq < SPEECH_VOCAB_SIZE] for seq in x]
+    else:
+        # Single sequence
+        return x[x < SPEECH_VOCAB_SIZE]
 
 
 # TODO: global resampler cache

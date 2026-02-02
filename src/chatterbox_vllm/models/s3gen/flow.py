@@ -135,7 +135,8 @@ class MaskedDiffWithXvec(torch.nn.Module):
             prompt_feat = prompt_feat.half()
             embedding = embedding.half()
 
-        assert token.shape[0] == 1
+        # Support batching - no longer restricted to batch_size=1
+        batch_size = token.shape[0]
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
@@ -253,7 +254,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             prompt_feat = prompt_feat.half()
             embedding = embedding.half()
 
-        assert token.shape[0] == 1
+        # Support batching - no longer restricted to batch_size=1
+        batch_size = token.shape[0]
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)

@@ -343,25 +343,39 @@ class ChatterboxTTS:
 
             start_time = time.time()
             results = []
+            
+            # Collect all speech tokens first
+            all_speech_tokens = []
             for i, batch_result in enumerate(batch_results):
                 for output in batch_result.outputs:
-                    if i % 5 == 0:
-                        print(f"[S3] Processing prompt {i} of {len(batch_results)}")
-
-                    # Run gc every 10 prompts
-                    if i % 10 == 0:
-                        torch.cuda.empty_cache()
-
                     speech_tokens = torch.tensor([token - SPEECH_TOKEN_OFFSET for token in output.token_ids], device="cuda")
                     speech_tokens = drop_invalid_tokens(speech_tokens)
                     speech_tokens = speech_tokens[speech_tokens < 6561]
-
+                    all_speech_tokens.append(speech_tokens)
+            
+            # Process waveforms in batches for better GPU utilization
+            s3_batch_size = 8  # Process 8 waveforms at a time
+            print(f"[S3] Processing {len(all_speech_tokens)} prompts in batches of {s3_batch_size}")
+            
+            for batch_idx in range(0, len(all_speech_tokens), s3_batch_size):
+                batch_tokens = all_speech_tokens[batch_idx:batch_idx + s3_batch_size]
+                
+                if batch_idx % (s3_batch_size * 5) == 0:
+                    print(f"[S3] Processing batch {batch_idx//s3_batch_size + 1}/{(len(all_speech_tokens) + s3_batch_size - 1)//s3_batch_size}")
+                
+                # Process each item in the batch (S3Gen doesn't support batching natively)
+                for speech_tokens in batch_tokens:
                     wav, _ = self.s3gen.inference(
                         speech_tokens=speech_tokens,
                         ref_dict=s3gen_ref,
                         n_timesteps=diffusion_steps,
                     )
                     results.append(wav.cpu())
+                
+                # Periodic cleanup
+                if batch_idx % (s3_batch_size * 2) == 0:
+                    torch.cuda.empty_cache()
+            
             s3gen_gen_time = time.time() - start_time
             print(f"[S3Gen] Wavform Generation time: {s3gen_gen_time:.2f}s")
 
