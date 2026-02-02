@@ -50,7 +50,15 @@ def add_hebrew_diacritics(text: str) -> str:
     try:
         if _dicta is None:
             from dicta_onnx import Dicta
-            _dicta = Dicta()
+            # Path to the downloaded ONNX model (in workspace root)
+            # Go up 5 levels from this file to workspace root: models/t3/mtltokenizer.py -> models -> chatterbox_vllm -> src -> workspace
+            model_path = Path(__file__).parent.parent.parent.parent.parent / "models" / "dicta-1.0.int8.onnx"
+            if model_path.exists():
+                _dicta = Dicta(model_path=str(model_path))
+                logger.info(f"Loaded Hebrew diacritization model from {model_path}")
+            else:
+                logger.warning(f"Hebrew diacritization model not found at {model_path} - skipping")
+                return text
         
         return _dicta.add_diacritics(text)
         
@@ -240,7 +248,22 @@ class MTLTokenizer(PreTrainedTokenizer):
     def _tokenize(self, text: str, **kwargs) -> List[str]:        
         # Parse out language token if it exists
         # This is injected by the ChatterboxTTS.generate_with_conds method
+        # It can be at the start or after [START]
         language_id = None
+        prefix = ""
+        suffix = ""
+        
+        # Check if text starts with [START]<lang>
+        if text.startswith('[START]<'):
+            prefix = '[START]'
+            text = text[7:]  # Remove [START]
+        
+        # Check if text ends with [STOP]
+        if text.endswith('[STOP]'):
+            suffix = '[STOP]'
+            text = text[:-6]  # Remove [STOP]
+        
+        # Now check for language token
         if text.startswith('<'):
             language_id = text.split('<')[1].split('>')[0]
             text = text.split('>')[1]
@@ -262,6 +285,12 @@ class MTLTokenizer(PreTrainedTokenizer):
         # Prepend language token again
         if language_id:
             text = f"[{language_id.lower()}]{text}"
+        
+        # Add back the [START] prefix and [STOP] suffix if they were there
+        if prefix:
+            text = prefix + text
+        if suffix:
+            text = text + suffix
         
         text = text.replace(' ', SPACE)
         return self.tokenizer.encode(text).tokens

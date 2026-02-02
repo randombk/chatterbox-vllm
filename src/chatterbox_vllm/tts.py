@@ -303,14 +303,14 @@ class ChatterboxTTS:
 
         cond_emb = self.update_exaggeration(cond_emb, exaggeration)
 
-        # Norm and tokenize text
-        prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
-
-        # For multilingual, prepend the language token
+        # For multilingual, prepend the language token before normalization
         if self.variant == "multilingual":
             # Use angle brackets to avoid conflicts with other start/stop tokens.
             # This will be parsed and replaced in the tokenizer.
             prompts = [f"<{language_id.lower()}>{p}" for p in prompts]
+
+        # Norm and tokenize text
+        prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
 
         with torch.inference_mode():
             start_time = time.time()
