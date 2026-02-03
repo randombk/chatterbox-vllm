@@ -406,8 +406,17 @@ class ChatterboxTTS:
                     n_timesteps=diffusion_steps,
                 )
                 
-                for wav in wavs:
-                    results.append(wav.cpu())
+                for i, wav in enumerate(wavs):
+                    # Unpad audio based on token length
+                    # 25 tokens per second, S3GEN_SR (24000) samples per second
+                    # => 960 samples per token
+                    valid_samples = int(speech_token_lens[i] * 960)
+                    
+                    # Ensure we don't go out of bounds
+                    if valid_samples < wav.shape[-1]:
+                        results.append(wav[..., :valid_samples].cpu())
+                    else:
+                        results.append(wav.cpu())
                 
                 # Periodic cleanup
                 if batch_idx % (s3_batch_size * 2) == 0:
