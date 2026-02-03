@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import List, Optional, Union
 from pathlib import Path
 import json
@@ -28,6 +29,9 @@ REPO_ID = "ResembleAI/chatterbox"
 _dicta = None
 _russian_stresser = None
 
+# Cache for prebatched dicta results
+_hebrew_prebatch_cache = {}
+
 
 def is_kanji(c: str) -> bool:
     """Check if character is kanji."""
@@ -46,6 +50,11 @@ def hiragana_normalize(text: str) -> str:
 def add_hebrew_diacritics(text: str) -> str:
     """Hebrew text normalization: adds diacritics to Hebrew text."""
     global _dicta
+    global _hebrew_prebatch_cache
+    
+    # Check if this text was prebatched
+    if text in _hebrew_prebatch_cache:
+        return _hebrew_prebatch_cache[text]
     
     try:
         if _dicta is None:
@@ -68,6 +77,42 @@ def add_hebrew_diacritics(text: str) -> str:
     except Exception as e:
         logger.warning(f"Hebrew diacritization failed: {e}")
         return text
+
+
+def batch_add_hebrew_diacritics(texts: List[str]) -> List[str]:
+    """Batch Hebrew diacritization for better performance."""
+    global _dicta
+    global _hebrew_prebatch_cache
+    
+    if not texts:
+        return []
+    
+    try:
+        if _dicta is None:
+            from dicta_onnx import Dicta
+            model_path = Path(__file__).parent.parent.parent.parent.parent / "models" / "dicta-1.0.int8.onnx"
+            if model_path.exists():
+                _dicta = Dicta(model_path=str(model_path))
+                logger.info(f"Loaded Hebrew diacritization model from {model_path}")
+            else:
+                logger.warning(f"Hebrew diacritization model not found at {model_path} - skipping")
+                return texts
+        
+        # Use the underlying model.predict() which supports true batching
+        results = _dicta.model.predict(texts, mark_matres_lectionis=None)
+        
+        # Cache the results for later use during tokenization
+        for text, result in zip(texts, results):
+            _hebrew_prebatch_cache[text] = result
+        
+        return results
+            
+    except ImportError:
+        logger.warning("dicta_onnx not available - Hebrew text processing skipped")
+        return texts
+    except Exception as e:
+        logger.warning(f"Batch Hebrew diacritization failed: {e}")
+        return texts
 
 
 def korean_normalize(text: str) -> str:
@@ -244,6 +289,40 @@ class MTLTokenizer(PreTrainedTokenizer):
             preprocessed_text = normalize("NFKD", preprocessed_text)
         
         return preprocessed_text
+    
+    def prebatch_hebrew_texts(self, prompts: List[str], language_id: str = 'he') -> None:
+        """
+        Pre-batch Hebrew diacritization for all prompts before tokenization.
+        This should be called before the tokenizer processes individual prompts.
+        """
+        if language_id != 'he':
+            return
+        
+        # Extract the actual text from prompts (remove [START], <he>, [STOP])
+        hebrew_texts = []
+        for prompt in prompts:
+            text = prompt
+            # Remove [START]
+            if text.startswith('[START]'):
+                text = text[7:]
+            # Remove [STOP]
+            if text.endswith('[STOP]'):
+                text = text[:-6]
+            # Remove language token
+            if text.startswith('<'):
+                text = text.split('>')[1] if '>' in text else text
+            
+            # Preprocess (lowercase, normalize)
+            text = self.preprocess_text(text, language_id)
+            hebrew_texts.append(text)
+        
+        # Batch process all Hebrew texts
+        if hebrew_texts:
+            print(f"[DICTA-BATCH] Processing {len(hebrew_texts)} Hebrew texts")
+            start = time.time()
+            batch_add_hebrew_diacritics(hebrew_texts)
+            elapsed = time.time() - start
+            print(f"[DICTA-BATCH] Completed in {elapsed:.3f}s ({len(hebrew_texts)/elapsed:.1f} texts/sec)")
 
     def _tokenize(self, text: str, **kwargs) -> List[str]:        
         # Parse out language token if it exists
@@ -294,6 +373,76 @@ class MTLTokenizer(PreTrainedTokenizer):
         
         text = text.replace(' ', SPACE)
         return self.tokenizer.encode(text).tokens
+    
+    def batch_encode_plus(
+        self,
+        batch_text_or_text_pairs,
+        add_special_tokens: bool = True,
+        padding: bool = False,
+        truncation: bool = False,
+        max_length: Optional[int] = None,
+        return_tensors: Optional[str] = None,
+        return_attention_mask: bool = True,
+        **kwargs
+    ):
+        """Batch encoding with language-specific preprocessing."""
+        # Process all texts through language-specific preprocessing
+        processed_texts = []
+        for text in batch_text_or_text_pairs:
+            # Same logic as _tokenize but for batch processing
+            language_id = None
+            prefix = ""
+            suffix = ""
+            
+            if text.startswith('[START]<'):
+                prefix = '[START]'
+                text = text[7:]
+            
+            if text.endswith('[STOP]'):
+                suffix = '[STOP]'
+                text = text[:-6]
+            
+            if text.startswith('<'):
+                language_id = text.split('<')[1].split('>')[0]
+                text = text.split('>')[1]
+            
+            text = self.preprocess_text(text, language_id)
+            
+            # Language-specific text processing
+            if language_id == 'zh':
+                text = self.cangjie_converter(text)
+            elif language_id == 'ja':
+                text = hiragana_normalize(text)
+            elif language_id == 'he':
+                text = add_hebrew_diacritics(text)
+            elif language_id == 'ko':
+                text = korean_normalize(text)
+            elif language_id == 'ru':
+                text = add_russian_stress(text)
+            
+            if language_id:
+                text = f"[{language_id.lower()}]{text}"
+            
+            if prefix:
+                text = prefix + text
+            if suffix:
+                text = text + suffix
+            
+            text = text.replace(' ', SPACE)
+            processed_texts.append(text)
+        
+        # Batch tokenize all processed texts
+        encodings = [self.tokenizer.encode(text) for text in processed_texts]
+        
+        # Convert to IDs
+        input_ids = [enc.ids for enc in encodings]
+        
+        result = {'input_ids': input_ids}
+        
+        if return_attention_mask:
+            result['attention_mask'] = [[1] * len(ids) for ids in input_ids]
+        
+        return result
 
     def _convert_token_to_id(self, token: str) -> int:
         return self.tokenizer.token_to_id(token)

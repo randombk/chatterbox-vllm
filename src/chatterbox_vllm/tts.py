@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union, Tuple, Any
 import time
+import logging
 
 from vllm import LLM, SamplingParams
 from functools import lru_cache
@@ -23,6 +24,7 @@ from .models.t3.modules.learned_pos_emb import LearnedPositionEmbeddings
 from .text_utils import punc_norm, SUPPORTED_LANGUAGES
 
 REPO_ID = "ResembleAI/chatterbox"
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Conditionals:
@@ -311,18 +313,47 @@ class ChatterboxTTS:
 
         # Norm and tokenize text
         prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
+        
+        # Pre-batch Hebrew diacritization if applicable
+        if self.variant == "multilingual" and language_id.lower() == "he":
+            try:
+                # Get the tokenizer from vLLM - it's available as a property
+                tokenizer = self.t3.llm_engine.tokenizer.tokenizer
+                if hasattr(tokenizer, 'prebatch_hebrew_texts'):
+                    tokenizer.prebatch_hebrew_texts(prompts, language_id.lower())
+            except Exception as e:
+                logger.debug(f"Could not prebatch Hebrew diacritization: {e}")
+        
+        # Batch tokenization for better performance
+        tokenizer = self.t3.llm_engine.tokenizer.tokenizer
+        print(f"[TOKENIZER-BATCH] Tokenizing {len(prompts)} prompts in batch")
+        tokenization_start = time.time()
+        
+        # Use batch_encode_plus for parallel tokenization
+        batch_encoding = tokenizer.batch_encode_plus(
+            prompts,
+            add_special_tokens=False,
+            return_attention_mask=True,
+            return_tensors=None  # Get lists, not tensors
+        )
+        
+        tokenization_time = time.time() - tokenization_start
+        print(f"[TOKENIZER-BATCH] Completed in {tokenization_time:.3f}s ({len(prompts)/tokenization_time:.1f} prompts/sec)")
+        
+        # Convert to token_ids format for vLLM
+        prompt_token_ids = batch_encoding['input_ids']
 
         with torch.inference_mode():
             start_time = time.time()
             batch_results = self.t3.generate(
                 [
                     {
-                        "prompt": text,
+                        "prompt_token_ids": token_ids,
                         "multi_modal_data": {
                             "conditionals": [cond_emb],
                         },
                     }
-                    for text in prompts
+                    for token_ids in prompt_token_ids
                 ],
                 sampling_params=SamplingParams(
                     temperature=temperature,
