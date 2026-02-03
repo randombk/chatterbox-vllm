@@ -101,28 +101,38 @@ class ConditionalCFM(BASECFM):
         # Or in future might add like a return_all_steps flag
         sol = []
 
+        # Support batching - use actual batch size instead of hardcoded 2
+        batch_size = x.size(0)
+        cfg_batch_size = batch_size * 2  # Classifier-free guidance uses 2x batch size
+        
         # Do not use concat, it may cause memory format changed and trt infer with wrong results!
-        x_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        mask_in = torch.zeros([2, 1, x.size(2)], device=x.device, dtype=x.dtype)
-        mu_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        t_in = torch.zeros([2], device=x.device, dtype=x.dtype)
-        spks_in = torch.zeros([2, 80], device=x.device, dtype=x.dtype)
-        cond_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        x_in = torch.zeros([cfg_batch_size, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        mask_in = torch.zeros([cfg_batch_size, 1, x.size(2)], device=x.device, dtype=x.dtype)
+        mu_in = torch.zeros([cfg_batch_size, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        t_in = torch.zeros([cfg_batch_size], device=x.device, dtype=x.dtype)
+        spks_in = torch.zeros([cfg_batch_size, 80], device=x.device, dtype=x.dtype)
+        cond_in = torch.zeros([cfg_batch_size, 80, x.size(2)], device=x.device, dtype=x.dtype)
         for step in range(1, len(t_span)):
             # Classifier-Free Guidance inference introduced in VoiceBox
-            x_in[:] = x
-            mask_in[:] = mask
-            mu_in[0] = mu
-            t_in[:] = t.unsqueeze(0)
-            spks_in[0] = spks
-            cond_in[0] = cond
+            # Duplicate batch: first half = conditional, second half = unconditional (for CFG)
+            x_in[:batch_size] = x
+            x_in[batch_size:] = x
+            mask_in[:batch_size] = mask
+            mask_in[batch_size:] = mask
+            mu_in[:batch_size] = mu
+            # mu_in[batch_size:] stays zero (unconditional)
+            t_in[:] = t.expand(cfg_batch_size)  # Same time for all elements
+            spks_in[:batch_size] = spks
+            # spks_in[batch_size:] stays zero (unconditional)
+            cond_in[:batch_size] = cond
+            # cond_in[batch_size:] stays zero (unconditional)
             dphi_dt = self.forward_estimator(
                 x_in, mask_in,
                 mu_in, t_in,
                 spks_in,
                 cond_in
             )
-            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
+            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [batch_size, batch_size], dim=0)
             dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt)
             x = x + dt * dphi_dt
             t = t + dt
@@ -136,13 +146,15 @@ class ConditionalCFM(BASECFM):
         if isinstance(self.estimator, torch.nn.Module):
             return self.estimator.forward(x, mask, mu, t, spks, cond)
         else:
+            # Support batching for TensorRT engine
+            batch_size = x.size(0)
             with self.lock:
-                self.estimator.set_input_shape('x', (2, 80, x.size(2)))
-                self.estimator.set_input_shape('mask', (2, 1, x.size(2)))
-                self.estimator.set_input_shape('mu', (2, 80, x.size(2)))
-                self.estimator.set_input_shape('t', (2,))
-                self.estimator.set_input_shape('spks', (2, 80))
-                self.estimator.set_input_shape('cond', (2, 80, x.size(2)))
+                self.estimator.set_input_shape('x', (batch_size, 80, x.size(2)))
+                self.estimator.set_input_shape('mask', (batch_size, 1, x.size(2)))
+                self.estimator.set_input_shape('mu', (batch_size, 80, x.size(2)))
+                self.estimator.set_input_shape('t', (batch_size,))
+                self.estimator.set_input_shape('spks', (batch_size, 80))
+                self.estimator.set_input_shape('cond', (batch_size, 80, x.size(2)))
                 # run trt engine
                 self.estimator.execute_v2([x.contiguous().data_ptr(),
                                            mask.contiguous().data_ptr(),
@@ -201,7 +213,7 @@ class CausalConditionalCFM(ConditionalCFM):
         self.rand_noise = torch.randn([1, 80, 50 * 300])
 
     @torch.inference_mode()
-    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
+    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, prompt_len=None, flow_cache=None):
         """Forward diffusion
 
         Args:
@@ -219,10 +231,16 @@ class CausalConditionalCFM(ConditionalCFM):
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
-
-        z = self.rand_noise[:, :, :mu.size(2)].to(mu.device).to(mu.dtype) * temperature
-        # fix prompt and overlap part mu and z
+        # Generate noise matching the batch size of mu
+        z = torch.randn([mu.size(0), 80, mu.size(2)], device=mu.device, dtype=mu.dtype) * temperature
+        
+        # fix prompt part: if we have prompt length, ensure z matches prompt (or rather, we don't need to noise the prompt? 
+        # Actually CosyVoice logic: "fix prompt and overlap part mu and z" usually implies replacing Z with known prompt mel? 
+        # But here cond is passed. Flow matching usually generates target from noise conditioned on things.
+        # If we look at original code: z = self.rand_noise...
+        
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
+
         if self.t_scheduler == 'cosine':
             t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
         return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), None

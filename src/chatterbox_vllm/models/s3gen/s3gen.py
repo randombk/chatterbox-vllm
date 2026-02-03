@@ -184,6 +184,7 @@ class S3Token2Mel(torch.nn.Module):
         ref_dict: Optional[dict] = None,
         finalize: bool = False,
         n_timesteps: int = 10,
+        speech_token_lens: Optional[torch.Tensor] = None,
     ):
         """
         Generate waveforms from S3 speech tokens and a reference waveform, which the speaker timbre is inferred from.
@@ -216,8 +217,13 @@ class S3Token2Mel(torch.nn.Module):
         if len(speech_tokens.shape) == 1:
             speech_tokens = speech_tokens.unsqueeze(0)
 
-        # assert speech_tokens.shape[0] == 1, "only batch size of one allowed for now"
-        speech_token_lens = torch.LongTensor([speech_tokens.size(1)]).to(self.device)
+        # Handle batch sizes > 1 or explicit lengths
+        if speech_token_lens is None:
+             # Assume all sequences are full length if not provided
+             batch_size, seq_len = speech_tokens.shape
+             speech_token_lens = torch.full((batch_size,), seq_len, dtype=torch.long, device=self.device)
+        else:
+             speech_token_lens = speech_token_lens.to(self.device)
 
         output_mels, _ = self.flow.inference(
             token=speech_tokens,
@@ -263,9 +269,10 @@ class S3Token2Wav(S3Token2Mel):
         ref_sr: Optional[int],
         # pre-computed ref embedding (prod API)
         ref_dict: Optional[dict] = None,
-        finalize: bool = False
+        finalize: bool = False,
+        speech_token_lens: Optional[torch.Tensor] = None,
     ):
-        output_mels = super().forward(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize)
+        output_mels = super().forward(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize, speech_token_lens=speech_token_lens)
 
         # TODO jrm: ignoring the speed control (mel interpolation) and the HiFTGAN caching mechanisms for now.
         hift_cache_source = torch.zeros(1, 1, 0).to(self.device)
@@ -289,8 +296,9 @@ class S3Token2Wav(S3Token2Mel):
         ref_dict: Optional[dict] = None,
         finalize: bool = False,
         n_timesteps: int = 10,
+        speech_token_lens: Optional[torch.Tensor] = None,
     ):
-        return super().forward(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize, n_timesteps=n_timesteps)
+        return super().forward(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize, n_timesteps=n_timesteps, speech_token_lens=speech_token_lens)
 
     @torch.inference_mode()
     def hift_inference(self, speech_feat, cache_source: torch.Tensor = None):
@@ -311,8 +319,9 @@ class S3Token2Wav(S3Token2Mel):
         finalize: bool = True,
         no_trim: bool = False,
         n_timesteps: int = 10,
+        speech_token_lens: Optional[torch.Tensor] = None,
     ):
-        output_mels = self.flow_inference(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize, n_timesteps=n_timesteps)
+        output_mels = self.flow_inference(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize, n_timesteps=n_timesteps, speech_token_lens=speech_token_lens)
         output_wavs, output_sources = self.hift_inference(output_mels, cache_source)
 
         # NOTE: ad-hoc method to reduce "spillover" from the reference clip.

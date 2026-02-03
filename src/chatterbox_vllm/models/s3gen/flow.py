@@ -256,6 +256,18 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
 
         # Support batching - no longer restricted to batch_size=1
         batch_size = token.shape[0]
+        
+        # Expand prompt/reference inputs if they are single (B=1) but token is batched (B>1)
+        if batch_size > 1:
+            if prompt_token.shape[0] == 1:
+                prompt_token = prompt_token.expand(batch_size, -1)
+            if prompt_token_len.shape[0] == 1:
+                prompt_token_len = prompt_token_len.expand(batch_size)
+            if prompt_feat.shape[0] == 1:
+                prompt_feat = prompt_feat.expand(batch_size, -1, -1)
+            if embedding.shape[0] == 1:
+                embedding = embedding.expand(batch_size, -1)
+
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
@@ -269,15 +281,28 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         h, h_lengths = self.encoder(token, token_len)
         if finalize is False:
             h = h[:, :-self.pre_lookahead_len * self.token_mel_ratio]
-        mel_len1, mel_len2 = prompt_feat.shape[1], h.shape[1] - prompt_feat.shape[1]
+        
+        # Note: prompt_feat.shape[1] is time-dim for mel
+        mel_len1 = prompt_feat.shape[1]
+        # h.shape[1] is the total length after encoder (includes prompt + generated)
+        mel_len2 = h.shape[1] - mel_len1
+        
         h = self.encoder_proj(h)
 
         # get conditions
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
+        # Use batch_size instead of 1
+        conds = torch.zeros([batch_size, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
+        # Create mask for the full length (prompt + gen) for each item in batch
+        # currently assuming all items in batch have same length if padded
+        # We can construct proper lengths if needed, but for now fixed length
+        total_len = mel_len1 + mel_len2
+        # Use torch.full to create a tensor of size (batch_size,) with value total_len
+        mask_lens = torch.full((batch_size,), total_len, device=h.device, dtype=torch.long)
+        mask = (~make_pad_mask(mask_lens)).to(h)
+        
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),

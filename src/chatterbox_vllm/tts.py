@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union, Tuple, Any
+from typing import Optional, Union, Tuple, Any, Generator
 import time
 import logging
 
@@ -10,6 +10,7 @@ from functools import lru_cache
 import librosa
 import torch
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
@@ -394,13 +395,18 @@ class ChatterboxTTS:
                 if batch_idx % (s3_batch_size * 5) == 0:
                     print(f"[S3] Processing batch {batch_idx//s3_batch_size + 1}/{(len(all_speech_tokens) + s3_batch_size - 1)//s3_batch_size}")
                 
-                # Process each item in the batch (S3Gen doesn't support batching natively)
-                for speech_tokens in batch_tokens:
-                    wav, _ = self.s3gen.inference(
-                        speech_tokens=speech_tokens,
-                        ref_dict=s3gen_ref,
-                        n_timesteps=diffusion_steps,
-                    )
+                # Pad batch for parallel S3 generation
+                speech_token_lens = torch.tensor([t.size(0) for t in batch_tokens], dtype=torch.long, device="cuda")
+                batch_tokens_padded = pad_sequence(batch_tokens, batch_first=True, padding_value=0)
+                
+                wavs, _ = self.s3gen.inference(
+                    speech_tokens=batch_tokens_padded,
+                    speech_token_lens=speech_token_lens,
+                    ref_dict=s3gen_ref,
+                    n_timesteps=diffusion_steps,
+                )
+                
+                for wav in wavs:
                     results.append(wav.cpu())
                 
                 # Periodic cleanup
@@ -411,6 +417,169 @@ class ChatterboxTTS:
             print(f"[S3Gen] Wavform Generation time: {s3gen_gen_time:.2f}s")
 
             return results
+    
+    def generate_streaming(
+        self,
+        prompts: Union[str, list[str]],
+        language_id: str = "en",
+        audio_prompt_path: Optional[str] = None,
+        exaggeration: float = 0.5,
+        temperature: float = 0.8,
+        max_tokens: int = 1000,
+        top_p: float = 0.8,
+        repetition_penalty: float = 2.0,
+        
+        # Streaming-specific parameters
+        chunk_size: int = 150,  # Generate audio every N speech tokens
+        
+        *args, **kwargs,
+    ) -> Generator[Tuple[int, torch.Tensor], None, None]:
+        """
+        Streaming TTS generation that yields audio chunks as they're produced.
+        
+        Unlike batched processing where all clients wait for the entire batch to complete,
+        this processes prompts individually and yields results immediately as each completes.
+        For very long prompts, it can also yield intermediate audio chunks.
+        
+        Args:
+            chunk_size: Number of speech tokens to accumulate before generating audio chunk.
+                       Smaller = lower latency, larger = better audio quality.
+                       Recommended: 100-200 tokens.
+        
+        Yields:
+            Tuple[int, torch.Tensor]: (prompt_index, audio_waveform)
+                - prompt_index: Which prompt this audio belongs to (0-indexed)
+                - audio_waveform: Complete or partial audio waveform tensor
+        
+        Example for client-server setup:
+            >>> for prompt_idx, audio_chunk in tts.generate_streaming(client_requests, language_id="he"):
+            ...     send_to_client(client_id=prompt_idx, audio=audio_chunk)
+            ...     # Client starts hearing audio immediately, doesn't wait for other clients
+        """
+        if isinstance(prompts, str):
+            prompts = [prompts]
+
+        # Validate language_id
+        if language_id and language_id.lower() not in self.get_supported_languages():
+            supported_langs = ", ".join(self.get_supported_languages().keys())
+            raise ValueError(
+                f"Unsupported language_id '{language_id}'. "
+                f"Supported languages: {supported_langs}"
+            )
+
+        # Get audio conditionals once
+        s3gen_ref, cond_emb = self.get_audio_conditionals(audio_prompt_path)
+        cond_emb = self.update_exaggeration(cond_emb, exaggeration)
+
+        # For multilingual, prepend the language token
+        if self.variant == "multilingual":
+            prompts = [f"<{language_id.lower()}>{p}" for p in prompts]
+
+        # Norm and tokenize
+        prompts = ["[START]" + punc_norm(p) + "[STOP]" for p in prompts]
+        
+        # Pre-batch Hebrew diacritization if applicable (helps with preprocessing)
+        if self.variant == "multilingual" and language_id.lower() == "he":
+            try:
+                tokenizer = self.t3.llm_engine.tokenizer.tokenizer
+                if hasattr(tokenizer, 'prebatch_hebrew_texts'):
+                    tokenizer.prebatch_hebrew_texts(prompts, language_id.lower())
+            except Exception as e:
+                logger.debug(f"Could not prebatch Hebrew diacritization: {e}")
+        
+        # Tokenize all prompts upfront
+        tokenizer = self.t3.llm_engine.tokenizer.tokenizer
+        logger.info(f"[STREAMING] Tokenizing {len(prompts)} prompts")
+        batch_encoding = tokenizer.batch_encode_plus(
+            prompts,
+            add_special_tokens=False,
+            return_attention_mask=True,
+            return_tensors=None
+        )
+        prompt_token_ids = batch_encoding['input_ids']
+
+        with torch.inference_mode():
+            logger.info(f"[STREAMING] Starting streaming generation for {len(prompts)} prompts")
+            
+            # STEP 1: Generate speech tokens for ALL prompts in parallel (batched T3)
+            # This is efficient and all prompts process together
+            t3_start = time.time()
+            batch_results = self.t3.generate(
+                [
+                    {
+                        "prompt_token_ids": token_ids,
+                        "multi_modal_data": {
+                            "conditionals": [cond_emb],
+                        },
+                    }
+                    for token_ids in prompt_token_ids
+                ],
+                sampling_params=SamplingParams(
+                    temperature=temperature,
+                    stop_token_ids=[self.t3_config.stop_speech_token + SPEECH_TOKEN_OFFSET],
+                    max_tokens=min(max_tokens, self.max_model_len),
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    *args, **kwargs,
+                ),
+                use_tqdm=False,
+            )
+            t3_time = time.time() - t3_start
+            logger.info(f"[STREAMING] T3 batch completed in {t3_time:.2f}s for {len(prompts)} prompts")
+            
+            # STEP 2: Extract all speech tokens
+            all_speech_tokens = []
+            for batch_result in batch_results:
+                for output in batch_result.outputs:
+                    speech_tokens = torch.tensor(
+                        [token - SPEECH_TOKEN_OFFSET for token in output.token_ids],
+                        device="cuda"
+                    )
+                    speech_tokens = drop_invalid_tokens(speech_tokens)
+                    speech_tokens = speech_tokens[speech_tokens < 6561]
+                    all_speech_tokens.append(speech_tokens)
+            
+            # STEP 3: Generate audio for each prompt and yield immediately
+            # This is where streaming happens - clients get results as soon as their audio is ready
+            for prompt_idx, speech_tokens in enumerate(all_speech_tokens):
+                logger.info(f"[STREAMING] Generating audio for prompt {prompt_idx + 1}/{len(prompts)} ({len(speech_tokens)} tokens)")
+                
+                if len(speech_tokens) > chunk_size * 2:
+                    # Long prompt - generate in chunks for progressive streaming
+                    num_chunks = (len(speech_tokens) + chunk_size - 1) // chunk_size
+                    logger.info(f"[STREAMING] Splitting into {num_chunks} audio chunks")
+                    
+                    for chunk_idx in range(num_chunks):
+                        chunk_start = chunk_idx * chunk_size
+                        chunk_end = min((chunk_idx + 1) * chunk_size, len(speech_tokens))
+                        chunk_tokens = speech_tokens[chunk_start:chunk_end]
+                        
+                        if len(chunk_tokens) > 20:  # Only generate if enough tokens
+                            s3_start = time.time()
+                            wav, _ = self.s3gen.inference(
+                                speech_tokens=chunk_tokens,
+                                ref_dict=s3gen_ref,
+                                n_timesteps=10,
+                            )
+                            s3_time = time.time() - s3_start
+                            
+                            logger.info(f"[STREAMING] Prompt {prompt_idx + 1} chunk {chunk_idx + 1}/{num_chunks} ready ({s3_time:.2f}s)")
+                            yield (prompt_idx, wav.cpu())
+                else:
+                    # Short prompt - generate complete audio at once
+                    s3_start = time.time()
+                    wav, _ = self.s3gen.inference(
+                        speech_tokens=speech_tokens,
+                        ref_dict=s3gen_ref,
+                        n_timesteps=10,
+                    )
+                    s3_time = time.time() - s3_start
+                    
+                    logger.info(f"[STREAMING] Prompt {prompt_idx + 1} audio ready ({s3_time:.2f}s)")
+                    yield (prompt_idx, wav.cpu())
+            
+            # Clean up once at the end
+            torch.cuda.empty_cache()
         
     def shutdown(self):
         del self.t3
