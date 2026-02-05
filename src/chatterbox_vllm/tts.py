@@ -188,6 +188,10 @@ class ChatterboxTTS:
         # Ensure the symlink in './t3-model-multilingual/model.safetensors' points to t3_cfg_path
         t3_cfg_path = Path(local_path).parent / "t3_mtl23ls_v2.safetensors"
         model_safetensors_path = Path.cwd() / "t3-model-multilingual" / "model.safetensors"
+        
+        # Ensure the directory exists
+        model_safetensors_path.parent.mkdir(parents=True, exist_ok=True)
+        
         model_safetensors_path.unlink(missing_ok=True)
         model_safetensors_path.symlink_to(t3_cfg_path)
 
