@@ -276,6 +276,14 @@ class SourceModuleHnNSF(torch.nn.Module):
             sine_wavs, uv, _ = self.l_sin_gen(x.transpose(1, 2))
             sine_wavs = sine_wavs.transpose(1, 2)
             uv = uv.transpose(1, 2)
+        
+        # Cast to match model dtype (FP16 if model is in half precision)
+        target_dtype = next(self.l_linear.parameters()).dtype
+        if sine_wavs.dtype != target_dtype:
+            sine_wavs = sine_wavs.to(target_dtype)
+        if uv.dtype != target_dtype:
+            uv = uv.to(target_dtype)
+        
         sine_merge = self.l_tanh(self.l_linear(sine_wavs))
 
         # source for noise branch, in the same shape as uv
@@ -412,6 +420,11 @@ class HiFTGenerator(nn.Module):
     def decode(self, x: torch.Tensor, s: torch.Tensor = torch.zeros(1, 1, 0)) -> torch.Tensor:
         s_stft_real, s_stft_imag = self._stft(s.squeeze(1))
         s_stft = torch.cat([s_stft_real, s_stft_imag], dim=1)
+        
+        # Cast to match model dtype (FP16 if using half precision)
+        target_dtype = x.dtype
+        if s_stft.dtype != target_dtype:
+            s_stft = s_stft.to(target_dtype)
 
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):

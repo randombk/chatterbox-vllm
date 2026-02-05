@@ -424,5 +424,7 @@ class CAMPPlus(torch.nn.Module):
 
     def inference(self, audio_list):
         speech, speech_lengths, speech_times = extract_feature(audio_list)
-        results = self.forward(speech.to(torch.float32))
+        # Ensure input type matches model weights (e.g. half if converted)
+        dtype = next(self.parameters()).dtype
+        results = self.forward(speech.to(dtype=dtype))
         return results

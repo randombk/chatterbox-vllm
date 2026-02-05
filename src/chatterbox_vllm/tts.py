@@ -93,8 +93,8 @@ class ChatterboxTTS:
                    max_batch_size: int = 10,
                    variant: str = "english",
 
-                   # Original Chatterbox defaults this to False. I don't see a substantial performance difference when running with FP16.
-                   s3gen_use_fp16: bool = False,
+                   # FP16 enabled by default for better performance
+                   s3gen_use_fp16: bool = True,
                    **kwargs) -> 'ChatterboxTTS':
         ckpt_dir = Path(ckpt_dir)
 
@@ -145,6 +145,11 @@ class ChatterboxTTS:
         s3gen = S3Gen(use_fp16=s3gen_use_fp16)
         s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
         s3gen = s3gen.to(device=target_device).eval()
+        if s3gen_use_fp16:
+            # Cast to FP16 but keep tokenizer and speaker_encoder in FP32
+            s3gen = s3gen.half()
+            s3gen.tokenizer = s3gen.tokenizer.float()
+            s3gen.speaker_encoder = s3gen.speaker_encoder.float()
 
         default_conds = Conditionals.load(ckpt_dir / "conds.pt")
         default_conds.to(device=target_device)
@@ -284,6 +289,9 @@ class ChatterboxTTS:
         # The original Chatterbox uses 10. 5 is often enough for good quality audio, though some quality loss can be detected.
         # This can be as low as 2 or 3 for faster generation, though the audio quality will degrade substantially.
         diffusion_steps: int = 10,
+        
+        # Batch size for S3 generation (waveform synthesis)
+        s3_batch_size: int = 8,
 
         # From original Chatterbox HF generation args
         top_p=1.0,
@@ -386,7 +394,7 @@ class ChatterboxTTS:
                     all_speech_tokens.append(speech_tokens)
             
             # Process waveforms in batches for better GPU utilization
-            s3_batch_size = 8  # Process 8 waveforms at a time
+            # s3_batch_size is now an argument
             print(f"[S3] Processing {len(all_speech_tokens)} prompts in batches of {s3_batch_size}")
             
             for batch_idx in range(0, len(all_speech_tokens), s3_batch_size):
@@ -507,85 +515,112 @@ class ChatterboxTTS:
         )
         prompt_token_ids = batch_encoding['input_ids']
 
+        # Prepare sampling params
+        sampling_params = SamplingParams(
+            temperature=temperature,
+            stop_token_ids=[self.t3_config.stop_speech_token + SPEECH_TOKEN_OFFSET],
+            max_tokens=min(max_tokens, self.max_model_len),
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            *args, **kwargs,
+        )
+
+        t3_start = time.time()
+
         with torch.inference_mode():
-            logger.info(f"[STREAMING] Starting streaming generation for {len(prompts)} prompts")
+            logger.info(f"[STREAMING] Starting INTERLEAVED streaming generation for {len(prompts)} prompts")
             
-            # STEP 1: Generate speech tokens for ALL prompts in parallel (batched T3)
-            # This is efficient and all prompts process together
-            t3_start = time.time()
-            batch_results = self.t3.generate(
-                [
-                    {
-                        "prompt_token_ids": token_ids,
-                        "multi_modal_data": {
-                            "conditionals": [cond_emb],
-                        },
-                    }
-                    for token_ids in prompt_token_ids
-                ],
-                sampling_params=SamplingParams(
-                    temperature=temperature,
-                    stop_token_ids=[self.t3_config.stop_speech_token + SPEECH_TOKEN_OFFSET],
-                    max_tokens=min(max_tokens, self.max_model_len),
-                    top_p=top_p,
-                    repetition_penalty=repetition_penalty,
-                    *args, **kwargs,
-                ),
-                use_tqdm=False,
-            )
-            t3_time = time.time() - t3_start
-            logger.info(f"[STREAMING] T3 batch completed in {t3_time:.2f}s for {len(prompts)} prompts")
+            # Helper to manage request state
+            class RequestState:
+                def __init__(self, idx, token_ids):
+                    self.idx = idx
+                    self.token_ids = token_ids
+                    self.tokens = []  # Accumulated generated speech tokens
+                    self.processed_tokens = 0  # Number of tokens already sent to S3
+                    self.finished = False
+
+            requests_map = {} # request_id -> RequestState
             
-            # STEP 2: Extract all speech tokens
-            all_speech_tokens = []
-            for batch_result in batch_results:
-                for output in batch_result.outputs:
-                    speech_tokens = torch.tensor(
-                        [token - SPEECH_TOKEN_OFFSET for token in output.token_ids],
-                        device="cuda"
-                    )
-                    speech_tokens = drop_invalid_tokens(speech_tokens)
-                    speech_tokens = speech_tokens[speech_tokens < 6561]
-                    all_speech_tokens.append(speech_tokens)
-            
-            # STEP 3: Generate audio for each prompt and yield immediately
-            # This is where streaming happens - clients get results as soon as their audio is ready
-            for prompt_idx, speech_tokens in enumerate(all_speech_tokens):
-                logger.info(f"[STREAMING] Generating audio for prompt {prompt_idx + 1}/{len(prompts)} ({len(speech_tokens)} tokens)")
+            # 1. Add requests to engine
+            for i, token_ids in enumerate(prompt_token_ids):
+                req_id = f"req_{i}_{time.time()}"
+                requests_map[req_id] = RequestState(i, token_ids)
                 
-                if len(speech_tokens) > chunk_size * 2:
-                    # Long prompt - generate in chunks for progressive streaming
-                    num_chunks = (len(speech_tokens) + chunk_size - 1) // chunk_size
-                    logger.info(f"[STREAMING] Splitting into {num_chunks} audio chunks")
+                # Construct PromptType dictionary
+                prompt_data = {
+                    "prompt_token_ids": token_ids,
+                    "multi_modal_data": {"conditionals": [cond_emb]}
+                }
+                
+                self.t3.llm_engine.add_request(
+                    request_id=req_id,
+                    prompt=prompt_data,
+                    params=sampling_params
+                )
+
+            # 2. Loop until all requests are done
+            last_chunk_time = time.time()
+            
+            while self.t3.llm_engine.has_unfinished_requests():
+                step_outputs = self.t3.llm_engine.step()
+                
+                # Check for updates and accumulated chunks
+                for output in step_outputs:
+                    req_id = output.request_id
+                    state = requests_map[req_id]
                     
-                    for chunk_idx in range(num_chunks):
-                        chunk_start = chunk_idx * chunk_size
-                        chunk_end = min((chunk_idx + 1) * chunk_size, len(speech_tokens))
-                        chunk_tokens = speech_tokens[chunk_start:chunk_end]
+                    # Update tokens from output
+                    # vLLM returns all tokens generated so far for this request
+                    current_tokens = output.outputs[0].token_ids
+                    
+                    # In standard vLLM, token_ids includes everything generated so far
+                    # We just need to check if we have enough new tokens since last process
+                    
+                    # Convert to speech tokens
+                    speech_tokens_raw = [t - SPEECH_TOKEN_OFFSET for t in current_tokens]
+                    
+                    # Store current valid tokens (filtering done later or on the fly?)
+                    # For performance, we just treat them as raw indices and filter before S3
+                    state.tokens = speech_tokens_raw
+                    state.finished = output.finished
+
+                    # Check if ready for chunk processing
+                    # Condition: (Unprocessed tokens >= chunk_size) OR (Finished and has remaining tokens)
+                    pending_count = len(state.tokens) - state.processed_tokens
+                    
+                    if pending_count >= chunk_size or (state.finished and pending_count > 10):
+                        # Extract chunk
+                        chunk_start = state.processed_tokens
+                        chunk_end = len(state.tokens)
                         
-                        if len(chunk_tokens) > 20:  # Only generate if enough tokens
-                            s3_start = time.time()
-                            wav, _ = self.s3gen.inference(
-                                speech_tokens=chunk_tokens,
-                                ref_dict=s3gen_ref,
-                                n_timesteps=10,
-                            )
-                            s3_time = time.time() - s3_start
+                        # If not finished, maybe clamp to exactly chunk_size multiple?
+                        # Simplified: Just take everything available
+                        
+                        new_raw_tokens = state.tokens[chunk_start:chunk_end]
+                        
+                        # Filter invalid tokens
+                        valid_tokens = [t for t in new_raw_tokens if 0 <= t < 6561]
+                        
+                        if len(valid_tokens) > 10: # Minimum useful audio
+                            # Generate Audio for this chunk
+                            # NOTE: treating chunk as independent generation for now
                             
-                            logger.info(f"[STREAMING] Prompt {prompt_idx + 1} chunk {chunk_idx + 1}/{num_chunks} ready ({s3_time:.2f}s)")
-                            yield (prompt_idx, wav.cpu())
-                else:
-                    # Short prompt - generate complete audio at once
-                    s3_start = time.time()
-                    wav, _ = self.s3gen.inference(
-                        speech_tokens=speech_tokens,
-                        ref_dict=s3gen_ref,
-                        n_timesteps=10,
-                    )
-                    s3_time = time.time() - s3_start
-                    
-                    logger.info(f"[STREAMING] Prompt {prompt_idx + 1} audio ready ({s3_time:.2f}s)")
-                    yield (prompt_idx, wav.cpu())
+                            chunk_tensor = torch.tensor([valid_tokens], device="cuda")
+                            
+                            # Log first chunk time
+                            if state.processed_tokens == 0:
+                                ttfb = time.time() - t3_start
+                                logger.info(f"[STREAMING] Request {state.idx} TTFB: {ttfb:.3f}s")
+
+                            wav, _ = self.s3gen.inference(
+                                speech_tokens=chunk_tensor,
+                                ref_dict=s3gen_ref,
+                                n_timesteps=10, # Maybe lower for intermediate chunks?
+                            )
+                            
+                            yield (state.idx, wav.cpu())
+                        
+                        state.processed_tokens = chunk_end
             
             # Clean up once at the end
             torch.cuda.empty_cache()

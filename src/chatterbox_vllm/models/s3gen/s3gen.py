@@ -119,7 +119,8 @@ class S3Token2Mel(torch.nn.Module):
 
     @property
     def dtype(self):
-        params = self.tokenizer.parameters()
+        # Use flow's dtype since tokenizer/speaker_encoder stay in FP32
+        params = self.flow.parameters()
         return next(params).dtype
     
     def embed_ref(
@@ -166,6 +167,13 @@ class S3Token2Mel(torch.nn.Module):
             ref_speech_tokens = ref_speech_tokens[:, :ref_mels_24.shape[1] // 2]
             ref_speech_token_lens[0] = ref_speech_tokens.shape[1]
 
+        # Cast embeddings to match flow model dtype (FP16 if enabled)
+        flow_dtype = next(self.flow.parameters()).dtype
+        if ref_x_vector.dtype != flow_dtype:
+            ref_x_vector = ref_x_vector.to(flow_dtype)
+        if ref_mels_24.dtype != flow_dtype:
+            ref_mels_24 = ref_mels_24.to(flow_dtype)
+
         return dict(
             prompt_token=ref_speech_tokens.to(device),
             prompt_token_len=ref_speech_token_lens,
@@ -208,11 +216,15 @@ class S3Token2Mel(torch.nn.Module):
             ref_dict = self.embed_ref(ref_wav, ref_sr)
         else:
             # type/device casting (all values will be numpy if it's from a prod API call)
+            flow_dtype = next(self.flow.parameters()).dtype
             for rk in list(ref_dict):
                 if isinstance(ref_dict[rk], np.ndarray):
                     ref_dict[rk] = torch.from_numpy(ref_dict[rk])
                 if torch.is_tensor(ref_dict[rk]):
                     ref_dict[rk] = ref_dict[rk].to(self.device)
+                    # Cast float tensors to match flow dtype (FP16 if enabled)
+                    if ref_dict[rk].dtype in [torch.float32, torch.float64] and ref_dict[rk].dtype != flow_dtype:
+                        ref_dict[rk] = ref_dict[rk].to(flow_dtype)
 
         if len(speech_tokens.shape) == 1:
             speech_tokens = speech_tokens.unsqueeze(0)
@@ -302,8 +314,15 @@ class S3Token2Wav(S3Token2Mel):
 
     @torch.inference_mode()
     def hift_inference(self, speech_feat, cache_source: torch.Tensor = None):
+        # Ensure inputs match model dtype (FP16 if enabled)
+        if speech_feat.dtype != self.dtype:
+            speech_feat = speech_feat.to(self.dtype)
+
         if cache_source is None:
-            cache_source = torch.zeros(1, 1, 0).to(self.device)
+            cache_source = torch.zeros(1, 1, 0).to(self.device, dtype=self.dtype)
+        elif cache_source.dtype != self.dtype:
+            cache_source = cache_source.to(self.dtype)
+
         return self.mel2wav.inference(speech_feat=speech_feat, cache_source=cache_source)
 
     @torch.inference_mode()

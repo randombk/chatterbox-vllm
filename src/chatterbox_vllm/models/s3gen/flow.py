@@ -312,4 +312,5 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         )
         feat = feat[:, :, mel_len1:]
         assert feat.shape[2] == mel_len2
-        return feat.float(), None  # NOTE jrm: why are they returning None here?
+        # Keep the dtype from the model (FP16 if fp16=True, else FP32)
+        return feat, None  # NOTE jrm: why are they returning None here?

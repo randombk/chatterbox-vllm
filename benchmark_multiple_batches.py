@@ -80,8 +80,8 @@ def main():
     print("MULTIPLE BATCHES PERFORMANCE TEST")
     print("="*70)
     
-    num_batches = 5
-    batch_size = 10
+    num_batches = 3
+    batch_size = 8
     total_prompts = num_batches * batch_size
     
     print(f"\nTest configuration:")
@@ -91,10 +91,11 @@ def main():
     print(f"  Diffusion steps: 5 (optimized for speed)")
     
     # Initialize model
-    print(f"\nInitializing model...")
+    print(f"\nInitializing model with compilation enabled...")
     tts = ChatterboxTTS.from_pretrained_multilingual(
         gpu_memory_utilization=0.4,
         max_model_len=1500,
+        compile=True,
     )
     
     # Warmup
