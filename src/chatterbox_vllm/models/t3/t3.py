@@ -1,5 +1,6 @@
 from typing import Iterable, Mapping, Optional, Sequence, Union
 import os
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -29,6 +30,52 @@ from vllm.multimodal.processing import (
 )
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
+
+# ==========================================
+# 1. MONKEY-PATCH TO EXTRACT SEQ_IDS
+# ==========================================
+import vllm.worker.model_runner as mr
+
+_CURRENT_SEQ_IDS = []
+_original_execute_model = mr.ModelRunner.execute_model
+
+def _patched_execute_model(self, model_input, *args, **kwargs):
+    """Intercepts vLLM's execute_model to extract sequence IDs for the current batch."""
+    global _CURRENT_SEQ_IDS
+    if hasattr(model_input, 'sampling_metadata') and model_input.sampling_metadata is not None:
+        try:
+            # Extract the first seq_id from each sequence group in the batch
+            _CURRENT_SEQ_IDS = [sg.seq_ids[0] for sg in model_input.sampling_metadata.seq_groups]
+        except Exception:
+            _CURRENT_SEQ_IDS = []
+    else:
+        _CURRENT_SEQ_IDS = []
+    return _original_execute_model(self, model_input, *args, **kwargs)
+
+# Apply the patch immediately when the module loads
+mr.ModelRunner.execute_model = _patched_execute_model
+
+# ==========================================
+# 2. GLOBAL STATE FOR POSITION TRACKING
+# ==========================================
+_CURRENT_POSITIONS = None
+
+class LRUDict(OrderedDict):
+    """Thread-safe LRU dict to prevent memory leaks when sequences finish."""
+    def __init__(self, maxsize=50000):
+        super().__init__()
+        self.maxsize = maxsize
+        
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        # Evict oldest entries if we exceed maxsize
+        if len(self) > self.maxsize:
+            self.popitem(last=False)
+
+# Maps seq_id -> absolute position of the BOS token (PREFILL_END_TOKEN)
+_SEQ_BOS_POSITIONS = LRUDict(maxsize=50000)
 
 from chatterbox_vllm.models.t3.modules.learned_pos_emb import LearnedPositionEmbeddings
 from chatterbox_vllm.models.t3.modules.t3_config import T3Config
@@ -426,43 +473,70 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         input_ids: torch.Tensor,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
+        positions = _CURRENT_POSITIONS
+
+        # ==========================================
+        # DECODE PHASE (No multimodal embeddings)
+        # ==========================================
         if multimodal_embeddings is None or len(multimodal_embeddings) == 0:
-            # There's no multimodal embeddings, so we're decoding.
-            # Remember to undo the offset we applied to the speech tokens.
-
-            # if torch.min(input_ids) < SPEECH_TOKEN_OFFSET:
-            #     print("input_ids", input_ids)
-            #     print("torch.min(input_ids)", torch.min(input_ids))
-            #     print("SPEECH_TOKEN_OFFSET", SPEECH_TOKEN_OFFSET)
-            #     raise ValueError("input_ids is less than SPEECH_TOKEN_OFFSET")
-
-            embeds = self.speech_emb(input_ids - SPEECH_TOKEN_OFFSET)
-
-            out = torch.cat([embeds, embeds], dim=1)
-
-            # if len(out) != len(input_ids):
-            #     print("t3/get_input_embeddings/out", out.shape, out.dtype)
-            #     print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype)
-            # assert len(out) == len(input_ids), "Number of output elements does not match number of input elements"
+            base_embeds = self.speech_emb(input_ids - SPEECH_TOKEN_OFFSET)
+            
+            speech_positions = []
+            for i in range(len(input_ids)):
+                seq_id = _CURRENT_SEQ_IDS[i] if i < len(_CURRENT_SEQ_IDS) else None
+                
+                if seq_id is not None and seq_id in _SEQ_BOS_POSITIONS and positions is not None:
+                    bos_pos = _SEQ_BOS_POSITIONS[seq_id]
+                    rel_pos = positions[i].item() - bos_pos
+                else:
+                    rel_pos = 0 
+                    
+                speech_positions.append(rel_pos)
+                
+            speech_positions = torch.tensor(speech_positions, device=input_ids.device, dtype=torch.long)
+            max_pos = self.precomputed_speech_pos_emb.shape[0] - 1
+            speech_positions = torch.clamp(speech_positions, 0, max_pos)
+            
+            pos_embeds = self.precomputed_speech_pos_emb[speech_positions]
+            final_embeds = base_embeds + pos_embeds
+            
+            out = torch.cat([final_embeds, final_embeds], dim=1)
             return out
+
+        # ==========================================
+        # PREFILL PHASE (Has multimodal embeddings)
+        # ==========================================
         else:
             # print("t3/get_input_embeddings/multimodal_embeddings", len(multimodal_embeddings))
             # print("t3/get_input_embeddings/input_ids", input_ids.shape, input_ids.dtype, input_ids)
             # print("t3/get_input_embeddings/multimodal_embeddings", [i.shape for i in (multimodal_embeddings or [])])
 
             out = []
+            current_idx = 0
+            
             for ids, multimodal_embedding in self.split_prefill_decode(input_ids, multimodal_embeddings):
-                # print("t3/get_input_embeddings/ids", ids.shape, ids.dtype, ids)
-                # print("t3/get_input_embeddings/multimodal_embedding", multimodal_embedding.shape if multimodal_embedding is not None else None)
-
+                chunk_len = len(ids)
+                
+                # Handle decode chunks that might be mixed in the same batch
                 if multimodal_embedding is None:
-                    # There's no multimodal embeddings, so we're decoding.
-                    # Remember to undo the offset we applied to the speech tokens.
-                    embeds = self.speech_emb(ids - SPEECH_TOKEN_OFFSET)
-                    final_embeds = torch.cat([embeds, embeds], dim=1)
-                    # assert len(final_embeds) == len(ids), "Number of output elements does not match number of input elements"
+                    base_embeds = self.speech_emb(ids - SPEECH_TOKEN_OFFSET)
+                    speech_positions = []
+                    for i in range(len(ids)):
+                        seq_id = _CURRENT_SEQ_IDS[current_idx + i] if (current_idx + i) < len(_CURRENT_SEQ_IDS) else None
+                        if seq_id is not None and seq_id in _SEQ_BOS_POSITIONS and positions is not None:
+                            rel_pos = positions[current_idx + i].item() - _SEQ_BOS_POSITIONS[seq_id]
+                        else:
+                            rel_pos = 0
+                        speech_positions.append(rel_pos)
+                        
+                    speech_positions = torch.tensor(speech_positions, device=ids.device, dtype=torch.long)
+                    max_pos = self.precomputed_speech_pos_emb.shape[0] - 1
+                    speech_positions = torch.clamp(speech_positions, 0, max_pos)
                     
-                    out.append(final_embeds)
+                    pos_embeds = self.precomputed_speech_pos_emb[speech_positions]
+                    final_embeds = base_embeds + pos_embeds
+                    out.append(torch.cat([final_embeds, final_embeds], dim=1))
+                    current_idx += chunk_len
                     continue
 
                 # We're in the prefill stage, and need to wrangle the multimodal embeddings into the right format.
@@ -498,6 +572,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
                     final_embeds = torch.cat([cond_embeds, uncond_embeds], dim=1)
                     # assert len(final_embeds) == len(ids), "Number of output elements does not match number of input elements"
                     out.append(final_embeds)
+                    
                 elif ids[0] == PREFILL_COND_START_TOKEN:
                     # We have the start of the prefill block.
                     # The only thing we an assume here is that we don't have the end token, so we can skip the start of speech token.
@@ -519,6 +594,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
                     final_embeds = torch.cat([cond_embeds, uncond_embeds], dim=1)
                     assert len(final_embeds) == len(ids), "Number of output elements does not match number of input elements"
                     out.append(final_embeds)
+                    
                 elif ids[-1] == PREFILL_END_TOKEN:
                     # We have the end of the prefill block.
                     # The only thing we an assume here is that we have the start of speech token,
@@ -577,6 +653,18 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
                     print("t3/get_input_embeddings/multimodal_embedding", multimodal_embedding.shape if multimodal_embedding is not None else None)
                     raise ValueError(f"Unknown prefill block: {ids}")
 
+                # >>> TRACK BOS POSITION FOR THIS PREFILL BLOCK <<<
+                if PREFILL_END_TOKEN in ids and positions is not None:
+                    bos_local_idx = (ids == PREFILL_END_TOKEN).nonzero(as_tuple=True)[0][-1].item()
+                    bos_global_idx = current_idx + bos_local_idx
+                    
+                    if bos_global_idx < len(_CURRENT_SEQ_IDS):
+                        seq_id = _CURRENT_SEQ_IDS[bos_global_idx]
+                        bos_abs_pos = positions[bos_global_idx].item()
+                        _SEQ_BOS_POSITIONS[seq_id] = bos_abs_pos
+
+                current_idx += chunk_len
+
             output = torch.cat(out, dim=0)
 
             # if len(output) != len(input_ids):
@@ -620,24 +708,13 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
         inputs_embeds: Optional[torch.Tensor] = None,  # The actual inputs to the model
         **kwargs: object,
     ) -> torch.Tensor:
-        # print("t3 ###")
-        # print("t3/inputs_embeds", inputs_embeds.shape, inputs_embeds.dtype)
-        # print("t3/positions", positions.shape, positions.dtype)
-
-        # These are usually NULL:
-        # print("t3/intermediate_tensors", intermediate_tensors)
-        # print("t3/input_ids", input_ids)
-        # print("t3/kwargs", kwargs)
+        global _CURRENT_POSITIONS
+        _CURRENT_POSITIONS = positions
 
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings(input_ids, [])
 
-        # Split the inputs_embeds into the three parts
         cond_embeds, uncond_embeds = inputs_embeds.split([self.dim, self.dim], dim=1)
-        # print("t3/cond_embeds", cond_embeds.shape, cond_embeds.dtype)
-        # print("t3/uncond_embeds", uncond_embeds.shape, uncond_embeds.dtype)
-
-        # TODO: Apply speech positional embeddings here
 
         hidden_states = self.tfmr(
             input_ids=None,
@@ -645,9 +722,7 @@ class T3VllmModel(nn.Module, VllmModelForTextGeneration, SupportsMultiModal):
             intermediate_tensors=None,
             inputs_embeds=torch.cat([cond_embeds, uncond_embeds], dim=0)
         )
-        # print("t3/hidden_states", hidden_states.shape, hidden_states.dtype)
 
-        # Reconcatenate the hidden states into the master tensor
         hidden_state_1, hidden_state_2 = hidden_states.split([len(cond_embeds), len(uncond_embeds)], dim=0)
         return torch.cat([hidden_state_1, hidden_state_2], dim=1)
 
